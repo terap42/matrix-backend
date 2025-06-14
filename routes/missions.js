@@ -557,6 +557,7 @@ router.get('/stats/overview', auth, async (req, res) => {
       message: 'Erreur serveur lors de la récupération des statistiques'
     });
   }
+  
 });
 
 module.exports = router;

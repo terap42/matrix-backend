@@ -1,4 +1,4 @@
-// server.js - VERSION AVEC MISSIONS INTÉGRÉES (GARDE VOTRE CODE USERS)
+// server.js - VERSION COMPLÈTE CORRIGÉE
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
@@ -25,193 +25,7 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
-// ✅ CRÉATION AUTOMATIQUE DES TABLES MISSIONS AU DÉMARRAGE
-async function createMissionTablesIfNeeded() {
-  try {
-    console.log('🔧 Vérification tables missions...');
-    
-    // Vérifier si la table missions existe
-    const [missionTableCheck] = await pool.execute("SHOW TABLES LIKE 'missions'");
-    
-    if (missionTableCheck.length === 0) {
-      console.log('📋 Création tables missions...');
-      
-      // Table missions
-      await pool.execute(`
-        CREATE TABLE missions (
-          id INT PRIMARY KEY AUTO_INCREMENT,
-          title VARCHAR(255) NOT NULL,
-          description TEXT NOT NULL,
-          category VARCHAR(100) NOT NULL,
-          budget_min DECIMAL(10,2),
-          budget_max DECIMAL(10,2),
-          budget_type ENUM('fixed', 'hourly') DEFAULT 'fixed',
-          currency VARCHAR(3) DEFAULT 'EUR',
-          deadline DATE,
-          client_id INT NOT NULL,
-          assigned_freelance_id INT NULL,
-          status ENUM('open', 'assigned', 'in_progress', 'completed', 'cancelled') DEFAULT 'open',
-          is_remote BOOLEAN DEFAULT TRUE,
-          location VARCHAR(255),
-          experience_level ENUM('beginner', 'intermediate', 'expert') DEFAULT 'intermediate',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE,
-          FOREIGN KEY (assigned_freelance_id) REFERENCES users(id) ON DELETE SET NULL
-        ) ENGINE=InnoDB
-      `);
-      
-      // Table skills
-      await pool.execute(`
-        CREATE TABLE skills (
-          id INT PRIMARY KEY AUTO_INCREMENT,
-          name VARCHAR(100) UNIQUE NOT NULL,
-          category VARCHAR(50) NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB
-      `);
-      
-      // Table mission_skills
-      await pool.execute(`
-        CREATE TABLE mission_skills (
-          mission_id INT,
-          skill_id INT,
-          PRIMARY KEY (mission_id, skill_id),
-          FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
-          FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB
-      `);
-      
-      // Table applications
-      await pool.execute(`
-        CREATE TABLE applications (
-          id INT PRIMARY KEY AUTO_INCREMENT,
-          mission_id INT NOT NULL,
-          freelance_id INT NOT NULL,
-          proposal TEXT NOT NULL,
-          proposed_budget DECIMAL(10,2),
-          proposed_deadline DATE,
-          status ENUM('pending', 'accepted', 'rejected') DEFAULT 'pending',
-          applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          responded_at TIMESTAMP NULL,
-          FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
-          FOREIGN KEY (freelance_id) REFERENCES users(id) ON DELETE CASCADE,
-          UNIQUE KEY unique_application (mission_id, freelance_id)
-        ) ENGINE=InnoDB
-      `);
-      
-      // Table mission_reports
-      await pool.execute(`
-        CREATE TABLE mission_reports (
-          id INT PRIMARY KEY AUTO_INCREMENT,
-          mission_id INT NOT NULL,
-          reporter_id INT NOT NULL,
-          reason TEXT NOT NULL,
-          status ENUM('pending', 'reviewed', 'resolved') DEFAULT 'pending',
-          admin_notes TEXT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
-          FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB
-      `);
-      
-      console.log('✅ Tables missions créées');
-      
-      // Créer des données de test
-      await createMissionTestData();
-    } else {
-      console.log('✅ Tables missions déjà présentes');
-    }
-    
-  } catch (error) {
-    console.error('❌ Erreur création tables missions:', error);
-  }
-}
-
-// ✅ CRÉATION DE DONNÉES DE TEST MISSIONS
-async function createMissionTestData() {
-  try {
-    console.log('📝 Création données test missions...');
-    
-    // Récupérer ou créer un utilisateur client
-    let [clients] = await pool.execute("SELECT id FROM users WHERE user_type = 'client' LIMIT 1");
-    let clientId;
-    
-    if (clients.length === 0) {
-      const hashedPassword = await bcrypt.hash('client123', 12);
-      const [result] = await pool.execute(`
-        INSERT INTO users (first_name, last_name, email, password, user_type, is_active, email_verified, created_at, updated_at) 
-        VALUES ('Client', 'Test', 'client@matrix.com', ?, 'client', 1, 1, NOW(), NOW())
-      `, [hashedPassword]);
-      clientId = result.insertId;
-      console.log('✅ Client test créé');
-    } else {
-      clientId = clients[0].id;
-    }
-    
-    // Ajouter compétences de base
-    const skills = [
-      ['JavaScript', 'Développement'],
-      ['React', 'Développement'],
-      ['Node.js', 'Développement'],
-      ['Angular', 'Développement'],
-      ['UI/UX Design', 'Design'],
-      ['Photoshop', 'Design']
-    ];
-    
-    for (const [name, category] of skills) {
-      await pool.execute('INSERT IGNORE INTO skills (name, category) VALUES (?, ?)', [name, category]);
-    }
-    
-    // Vérifier si des missions existent déjà
-    const [missionCount] = await pool.execute('SELECT COUNT(*) as count FROM missions');
-    
-    if (missionCount[0].count === 0) {
-      // Créer 3 missions de test
-      const missions = [
-        {
-          title: 'Développement site web vitrine',
-          description: 'Création d\'un site web moderne et responsive pour une entreprise.',
-          category: 'Développement',
-          budget_min: 1500,
-          budget_max: 2500,
-          deadline: '2024-07-15'
-        },
-        {
-          title: 'Design logo et identité visuelle',
-          description: 'Création d\'un logo professionnel et de l\'identité visuelle complète.',
-          category: 'Design',
-          budget_min: 800,
-          budget_max: 1200,
-          deadline: '2024-06-30'
-        },
-        {
-          title: 'Application mobile e-commerce',
-          description: 'Développement d\'une application mobile complète pour la vente en ligne.',
-          category: 'Développement',
-          budget_min: 3000,
-          budget_max: 5000,
-          deadline: '2024-08-30'
-        }
-      ];
-      
-      for (const mission of missions) {
-        await pool.execute(`
-          INSERT INTO missions (title, description, category, budget_min, budget_max, currency, deadline, client_id, status, is_remote, experience_level) 
-          VALUES (?, ?, ?, ?, ?, 'EUR', ?, ?, 'open', 1, 'intermediate')
-        `, [mission.title, mission.description, mission.category, mission.budget_min, mission.budget_max, mission.deadline, clientId]);
-      }
-      
-      console.log('✅ 3 missions de test créées');
-    }
-    
-  } catch (error) {
-    console.error('❌ Erreur création données test:', error);
-  }
-}
-
-// ✅ MIDDLEWARE D'AUTHENTIFICATION (pour les nouvelles routes missions)
+// ✅ MIDDLEWARE D'AUTHENTIFICATION CORRIGÉ
 const authMiddleware = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -247,35 +61,101 @@ const authMiddleware = async (req, res, next) => {
     
     next();
   } catch (error) {
-    res.status(500).json({
+    console.error('❌ Erreur auth middleware:', error);
+    res.status(401).json({
       success: false,
-      message: 'Erreur serveur d\'authentification.'
+      message: 'Token invalide.'
     });
   }
 };
 
-// ✅ FONCTION HELPER
-function calculateEstimatedDuration(deadline) {
-  if (!deadline) return null;
-  
-  const now = new Date();
-  const deadlineDate = new Date(deadline);
-  const diffTime = deadlineDate - now;
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  
-  if (diffDays < 0) return 'Échue';
-  if (diffDays === 0) return 'Aujourd\'hui';
-  if (diffDays === 1) return '1 jour';
-  if (diffDays < 7) return `${diffDays} jours`;
-  if (diffDays < 30) return `${Math.ceil(diffDays / 7)} semaines`;
-  return `${Math.ceil(diffDays / 30)} mois`;
+// ✅ FONCTION HELPER POUR GÉRER LES SKILLS - CORRIGÉE
+async function handleMissionSkills(skillNames, missionId, connection) {
+  try {
+    console.log('🔧 Traitement skills pour mission:', missionId, skillNames);
+    
+    if (!skillNames || skillNames.length === 0) {
+      console.log('⚠️ Aucun skill fourni');
+      return [];
+    }
+
+    const skillIds = [];
+    
+    for (const skillName of skillNames) {
+      if (!skillName || !skillName.trim()) continue;
+      
+      const trimmedSkill = skillName.trim();
+      
+      // Vérifier si le skill existe déjà
+      const [existingSkills] = await connection.execute(
+        'SELECT id FROM skills WHERE LOWER(name) = LOWER(?)',
+        [trimmedSkill]
+      );
+      
+      let skillId;
+      
+      if (existingSkills.length > 0) {
+        // Skill existe déjà
+        skillId = existingSkills[0].id;
+        console.log(`✅ Skill existant trouvé: ${trimmedSkill} (ID: ${skillId})`);
+      } else {
+        // Créer un nouveau skill - AVEC created_at corrigé
+        try {
+          const [insertResult] = await connection.execute(
+            'INSERT INTO skills (name, category, created_at) VALUES (?, ?, NOW())',
+            [trimmedSkill, 'général'] // Catégorie par défaut
+          );
+          skillId = insertResult.insertId;
+          console.log(`✅ Nouveau skill créé: ${trimmedSkill} (ID: ${skillId})`);
+        } catch (insertError) {
+          console.error(`❌ Erreur insertion skill ${trimmedSkill}:`, insertError);
+          // Si erreur d'insertion, essayer de récupérer le skill (peut-être créé entre temps)
+          const [retrySkills] = await connection.execute(
+            'SELECT id FROM skills WHERE LOWER(name) = LOWER(?)',
+            [trimmedSkill]
+          );
+          if (retrySkills.length > 0) {
+            skillId = retrySkills[0].id;
+            console.log(`✅ Skill récupéré après erreur: ${trimmedSkill} (ID: ${skillId})`);
+          } else {
+            console.error(`❌ Impossible de créer/récupérer skill: ${trimmedSkill}`);
+            continue; // Passer au skill suivant
+          }
+        }
+      }
+      
+      if (skillId) {
+        skillIds.push(skillId);
+        
+        // Associer le skill à la mission
+        try {
+          await connection.execute(
+            'INSERT IGNORE INTO mission_skills (mission_id, skill_id, created_at) VALUES (?, ?, NOW())',
+            [missionId, skillId]
+          );
+          console.log(`✅ Skill ${trimmedSkill} associé à la mission ${missionId}`);
+        } catch (linkError) {
+          console.error(`❌ Erreur association skill ${trimmedSkill} à mission ${missionId}:`, linkError);
+        }
+      }
+    }
+    
+    console.log(`✅ ${skillIds.length} skills traités pour la mission ${missionId}`);
+    return skillIds;
+    
+  } catch (error) {
+    console.error('❌ Erreur traitement skills:', error);
+    throw error;
+  }
 }
 
-// ✅ ======== NOUVELLES ROUTES MISSIONS ========
+// ✅ ======== ROUTES MISSIONS COMPLÈTES CORRIGÉES ========
 
-// GET /api/missions - Liste des missions
+// GET /api/missions - Liste des missions avec filtres
 app.get('/api/missions', authMiddleware, async (req, res) => {
   try {
+    console.log('📋 Récupération missions pour utilisateur:', req.user.id);
+    
     const {
       page = 1,
       limit = 10,
@@ -308,22 +188,22 @@ app.get('/api/missions', authMiddleware, async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
-    // Compter le total
-    const countQuery = `SELECT COUNT(*) as total FROM missions m ${whereClause}`;
-    const [countResult] = await pool.execute(countQuery, queryParams);
-    const totalItems = countResult[0].total;
-
-    // Requête principale
+    // Requête principale avec informations client et compétences
     const query = `
       SELECT 
         m.*,
         u.first_name,
         u.last_name,
         u.email as client_email,
-        COALESCE((SELECT COUNT(*) FROM applications WHERE mission_id = m.id), 0) as applications_count
+        u.avatar as client_avatar,
+        COALESCE((SELECT COUNT(*) FROM applications WHERE mission_id = m.id), 0) as applications_count,
+        GROUP_CONCAT(DISTINCT s.name) as skills_list
       FROM missions m
       LEFT JOIN users u ON m.client_id = u.id
+      LEFT JOIN mission_skills ms ON m.id = ms.mission_id
+      LEFT JOIN skills s ON ms.skill_id = s.id
       ${whereClause}
+      GROUP BY m.id
       ORDER BY m.${sortBy} ${sortOrder}
       LIMIT ? OFFSET ?
     `;
@@ -331,47 +211,290 @@ app.get('/api/missions', authMiddleware, async (req, res) => {
     queryParams.push(parseInt(limit), parseInt(offset));
     const [missions] = await pool.execute(query, queryParams);
 
-    // Formatage
+    // Formatage des missions pour le frontend
     const formattedMissions = missions.map(mission => ({
       id: mission.id.toString(),
       title: mission.title,
       description: mission.description,
-      budget: mission.budget_max || mission.budget_min || 0,
-      currency: mission.currency || 'EUR',
-      status: mission.status,
       category: mission.category,
-      clientId: mission.client_id.toString(),
-      clientName: `${mission.first_name} ${mission.last_name}`,
-      clientEmail: mission.client_email,
-      skillsRequired: [],
-      createdAt: mission.created_at,
-      updatedAt: mission.updated_at,
-      publishedAt: mission.created_at,
+      budget: {
+        min: mission.budget_min || 0,
+        max: mission.budget_max || 0
+      },
       deadline: mission.deadline,
-      applicationsCount: mission.applications_count,
-      isReported: false,
-      priority: mission.experience_level || 'medium',
-      estimatedDuration: mission.deadline ? calculateEstimatedDuration(mission.deadline) : null
+      clientName: `${mission.first_name || 'Client'} ${mission.last_name || 'Anonyme'}`,
+      clientAvatar: mission.client_avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+      publishedAt: mission.created_at,
+      skills: mission.skills_list ? mission.skills_list.split(',') : [],
+      applicationsCount: mission.applications_count || 0,
+      status: mission.status,
+      isUrgent: mission.is_urgent || false
     }));
+
+    console.log(`✅ ${formattedMissions.length} missions récupérées`);
 
     res.json({
       success: true,
-      data: {
-        missions: formattedMissions,
-        pagination: {
-          currentPage: parseInt(page),
-          totalItems,
-          totalPages: Math.ceil(totalItems / limit),
-          itemsPerPage: parseInt(limit)
-        }
-      }
+      missions: formattedMissions // ✅ Format attendu par le frontend
     });
 
   } catch (error) {
     console.error('❌ Erreur récupération missions:', error);
     res.status(500).json({
       success: false,
-      message: 'Erreur serveur lors de la récupération des missions'
+      message: 'Erreur serveur lors de la récupération des missions',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// POST /api/missions - Créer une nouvelle mission ✅ CORRIGÉE
+app.post('/api/missions', authMiddleware, async (req, res) => {
+  let connection;
+  
+  try {
+    console.log('📝 Création nouvelle mission par utilisateur:', req.user.id);
+    console.log('📋 Données reçues:', req.body);
+    
+    const {
+      title,
+      description,
+      category,
+      budget,
+      deadline,
+      skills,
+      isUrgent
+    } = req.body;
+
+    // Validation des champs obligatoires
+    if (!title || !description || !category || !budget || !deadline) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tous les champs obligatoires doivent être remplis'
+      });
+    }
+
+    // Validation du budget
+    if (!budget.min || !budget.max || budget.min <= 0 || budget.max <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Budget minimum et maximum requis et doivent être positifs'
+      });
+    }
+
+    if (budget.min > budget.max) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le budget minimum ne peut pas être supérieur au maximum'
+      });
+    }
+
+    // Validation de la date
+    const deadlineDate = new Date(deadline);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    if (deadlineDate < today) {
+      return res.status(400).json({
+        success: false,
+        message: 'La date limite ne peut pas être dans le passé'
+      });
+    }
+
+    // Utiliser une transaction pour assurer la cohérence
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Insertion de la mission
+      const [result] = await connection.execute(`
+        INSERT INTO missions (
+          title, description, category, budget_min, budget_max, 
+          currency, deadline, client_id, status, is_remote, is_urgent,
+          experience_level, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'EUR', ?, ?, 'open', 1, ?, 'intermediate', NOW(), NOW())
+      `, [
+        title.trim(),
+        description.trim(),
+        category,
+        budget.min,
+        budget.max,
+        deadline,
+        req.user.id,
+        isUrgent || false
+      ]);
+
+      const missionId = result.insertId;
+      console.log('✅ Mission créée avec ID:', missionId);
+
+      // Gestion des compétences avec la fonction corrigée
+      if (skills && skills.length > 0) {
+        await handleMissionSkills(skills, missionId, connection);
+      }
+
+      await connection.commit();
+      
+      // Récupérer la mission complète pour la réponse
+      const [newMission] = await pool.execute(`
+        SELECT 
+          m.*,
+          u.first_name,
+          u.last_name,
+          u.email as client_email,
+          u.avatar as client_avatar,
+          GROUP_CONCAT(s.name) as skills_list
+        FROM missions m
+        LEFT JOIN users u ON m.client_id = u.id
+        LEFT JOIN mission_skills ms ON m.id = ms.mission_id
+        LEFT JOIN skills s ON ms.skill_id = s.id
+        WHERE m.id = ?
+        GROUP BY m.id
+      `, [missionId]);
+
+      const mission = newMission[0];
+      const formattedMission = {
+        id: mission.id.toString(),
+        title: mission.title,
+        description: mission.description,
+        category: mission.category,
+        budget: {
+          min: mission.budget_min,
+          max: mission.budget_max
+        },
+        deadline: mission.deadline,
+        clientName: `${mission.first_name} ${mission.last_name}`,
+        clientAvatar: mission.client_avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+        publishedAt: mission.created_at,
+        skills: mission.skills_list ? mission.skills_list.split(',') : [],
+        applicationsCount: 0,
+        status: mission.status,
+        isUrgent: mission.is_urgent || false
+      };
+
+      console.log('✅ Mission formatée pour réponse:', formattedMission.title);
+
+      res.status(201).json({
+        success: true,
+        message: 'Mission créée avec succès',
+        mission: formattedMission // ✅ Format attendu par le frontend
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur création mission:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la création de la mission',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// GET /api/missions/:id - Récupérer une mission spécifique
+app.get('/api/missions/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🔍 Récupération mission ID:', id);
+
+    const [missions] = await pool.execute(`
+      SELECT 
+        m.*,
+        u.first_name,
+        u.last_name,
+        u.email as client_email,
+        u.phone as client_phone,
+        u.avatar as client_avatar,
+        u.bio as client_bio,
+        u.location as client_location,
+        u.created_at as client_member_since,
+        COALESCE((SELECT COUNT(*) FROM applications WHERE mission_id = m.id), 0) as applications_count,
+        GROUP_CONCAT(DISTINCT s.name) as skills_list
+      FROM missions m
+      LEFT JOIN users u ON m.client_id = u.id
+      LEFT JOIN mission_skills ms ON m.id = ms.mission_id
+      LEFT JOIN skills s ON ms.skill_id = s.id
+      WHERE m.id = ?
+      GROUP BY m.id
+    `, [id]);
+
+    if (missions.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Mission non trouvée'
+      });
+    }
+
+    const mission = missions[0];
+    
+    // Calcul des statistiques client
+    const [clientStats] = await pool.execute(`
+      SELECT 
+        COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_projects,
+        4.5 as average_rating
+      FROM missions 
+      WHERE client_id = ?
+    `, [mission.client_id]);
+
+    const formattedMission = {
+      id: mission.id.toString(),
+      title: mission.title,
+      description: mission.description,
+      longDescription: mission.description + '\n\nDescription détaillée de la mission avec plus d\'informations sur les attentes, les livrables et le contexte du projet.',
+      category: mission.category,
+      budget: {
+        min: mission.budget_min || 0,
+        max: mission.budget_max || 0
+      },
+      deadline: mission.deadline,
+      client: {
+        id: mission.client_id.toString(),
+        name: `${mission.first_name || 'Client'} ${mission.last_name || 'Anonyme'}`,
+        avatar: mission.client_avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+        rating: clientStats[0].average_rating || 4.5,
+        completedProjects: clientStats[0].completed_projects || 0,
+        memberSince: mission.client_member_since,
+        verified: true
+      },
+      publishedAt: mission.created_at,
+      skills: mission.skills_list ? mission.skills_list.split(',') : [],
+      requirements: [
+        'Expérience minimale de 2 ans dans le domaine',
+        'Portfolio démontrant des projets similaires',
+        'Capacité à respecter les délais',
+        'Communication régulière pendant le projet'
+      ],
+      deliverables: [
+        'Livrable principal selon les spécifications',
+        'Documentation technique',
+        'Fichiers sources',
+        'Support post-livraison de 30 jours'
+      ],
+      applicationsCount: mission.applications_count || 0,
+      status: mission.status,
+      isUrgent: mission.is_urgent || false,
+      attachments: []
+    };
+
+    console.log('✅ Mission détail récupérée:', formattedMission.title);
+
+    res.json({
+      success: true,
+      data: formattedMission
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur récupération mission:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération de la mission'
     });
   }
 });
@@ -410,6 +533,8 @@ app.get('/api/missions/stats/overview', authMiddleware, async (req, res) => {
 app.delete('/api/missions/:id', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    console.log('🗑️ Suppression mission ID:', id);
+    
     const [result] = await pool.execute('DELETE FROM missions WHERE id = ?', [id]);
 
     if (result.affectedRows === 0) {
@@ -419,6 +544,7 @@ app.delete('/api/missions/:id', authMiddleware, async (req, res) => {
       });
     }
 
+    console.log('✅ Mission supprimée avec succès');
     res.json({
       success: true,
       message: 'Mission supprimée avec succès'
@@ -438,6 +564,7 @@ app.patch('/api/missions/:id/status', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
+    console.log(`🔄 Changement statut mission ${id} vers: ${status}`);
 
     const validStatuses = ['open', 'assigned', 'in_progress', 'completed', 'cancelled'];
     
@@ -460,6 +587,7 @@ app.patch('/api/missions/:id/status', authMiddleware, async (req, res) => {
       });
     }
 
+    console.log('✅ Statut mission mis à jour');
     res.json({
       success: true,
       message: 'Statut mis à jour avec succès'
@@ -474,7 +602,16 @@ app.patch('/api/missions/:id/status', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ ======== VOTRE CODE USERS EXISTANT (GARDÉ TEL QUEL) ========
+// GET /api/health - Route de santé pour tester la connexion
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API MATRIX opérationnelle',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ✅ ======== ROUTES D'AUTHENTIFICATION ========
 
 // Route de test
 app.get('/', (req, res) => {
@@ -485,24 +622,20 @@ app.get('/', (req, res) => {
   });
 });
 
-// ✅ Route de test API
+// Route de test API
 app.get('/api/test', (req, res) => {
   res.json({ 
     message: 'API MATRIX fonctionne',
     routes_disponibles: [
       'GET /api/test',
+      'GET /api/health',
       'POST /api/auth/login',
       'POST /api/auth/create-admin',
       'GET /api/users/health',
-      'GET /api/users',
-      'GET /api/users/stats',
-      'POST /api/users',
-      'PUT /api/users/:id',
-      'PUT /api/users/:id/status',
-      'DELETE /api/users/:id',
-      'POST /api/users/bulk-action',
-      '--- NOUVELLES ROUTES MISSIONS ---',
+      '--- ROUTES MISSIONS CORRIGÉES ---',
       'GET /api/missions',
+      'POST /api/missions ✅ CORRIGÉE',
+      'GET /api/missions/:id',
       'DELETE /api/missions/:id',
       'PATCH /api/missions/:id/status',
       'GET /api/missions/stats/overview'
@@ -633,61 +766,7 @@ app.post('/api/auth/create-admin', async (req, res) => {
   }
 });
 
-// Route de debug table
-app.get('/api/auth/debug-table', async (req, res) => {
-  try {
-    console.log('🔍 === DEBUG TABLE STRUCTURE ===');
-    
-    const [structure] = await pool.execute('DESCRIBE users');
-    const [users] = await pool.execute('SELECT id, email, user_type, first_name, last_name, is_active FROM users LIMIT 5');
-    
-    res.json({
-      message: 'Structure de la table users',
-      structure: structure,
-      sample_users: users,
-      column_names: structure.map(col => col.Field)
-    });
-    
-  } catch (error) {
-    console.error('❌ Erreur debug table:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Route pour générer un token admin rapide
-app.post('/api/auth/quick-admin-token', async (req, res) => {
-  try {
-    const token = jwt.sign(
-      {
-        id: 1,
-        email: 'admin@matrix.com',
-        user_type: 'admin',
-        first_name: 'Admin',
-        last_name: 'MATRIX'
-      },
-      process.env.JWT_SECRET || 'matrix-secret-key',
-      { expiresIn: '24h' }
-    );
-    
-    res.json({
-      message: 'Token admin généré pour test',
-      token: token,
-      user: {
-        id: 1,
-        email: 'admin@matrix.com',
-        user_type: 'admin',
-        first_name: 'Admin',
-        last_name: 'MATRIX'
-      },
-      instructions: 'Utilisez ce token dans localStorage'
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ✅ ROUTES UTILISATEURS - Chargement sécurisé (gardées de votre version)
+// ✅ ROUTES UTILISATEURS - Chargement sécurisé
 try {
   const usersRoutes = require('./routes/users');
   app.use('/api/users', usersRoutes);
@@ -695,14 +774,6 @@ try {
 } catch (error) {
   console.error('❌ Erreur chargement routes users:', error.message);
   console.log('⚠️ Routes users non disponibles');
-}
-
-// ✅ ROUTES AUTH EXTERNES - Tentative de chargement (optionnel)
-try {
-  const authRoutes = require('./routes/auth');
-  console.log('✅ Fichier routes/auth.js trouvé mais routes directes utilisées');
-} catch (error) {
-  console.log('💡 Fichier routes/auth.js non trouvé, utilisation des routes directes');
 }
 
 // Middleware de gestion des erreurs
@@ -717,55 +788,44 @@ app.use((err, req, res, next) => {
 // Route 404
 app.use((req, res) => {
   res.status(404).json({
-    error: 'Route non trouvee',
+    error: 'Route non trouvée',
     path: req.originalUrl,
     method: req.method
   });
 });
 
-// Demarrage du serveur
+// Démarrage du serveur
 async function startServer() {
   try {
-    // Tester la connexion a la base de donnees
+    // Tester la connexion à la base de données
     const dbConnected = await testConnection();
     if (!dbConnected) {
-      console.error('Impossible de se connecter a la base de donnees');
+      console.error('Impossible de se connecter à la base de données');
       console.log('Assurez-vous que :');
-      console.log(' - MySQL est demarre');
-      console.log(' - Les parametres dans .env sont corrects');
-      console.log(' - La base de donnees existe (npm run init-db)');
+      console.log(' - MySQL est démarré');
+      console.log(' - Les paramètres dans .env sont corrects');
+      console.log(' - La base de données existe (npm run init-db)');
       process.exit(1);
     }
 
-    // ✅ CRÉER LES TABLES MISSIONS AUTOMATIQUEMENT
-    await createMissionTablesIfNeeded();
-
     app.listen(PORT, () => {
       console.log('================================');
-      console.log(`✅ Serveur MATRIX demarre !`);
+      console.log(`✅ Serveur MATRIX démarré !`);
       console.log(`Port: ${PORT}`);
       console.log(`Mode: ${process.env.NODE_ENV || 'development'}`);
       console.log(`API: http://localhost:${PORT}`);
-      console.log(`Base de donnees: ${process.env.DB_NAME}`);
+      console.log(`Base de données: ${process.env.DB_NAME}`);
       console.log('Routes disponibles:');
       console.log('  📍 ROUTES DE TEST:');
       console.log('    - GET  /api/test');
-      console.log('  🔐 ROUTES D\'AUTHENTIFICATION (DIRECTES):');
+      console.log('    - GET  /api/health ✅ NOUVEAU');
+      console.log('  🔐 ROUTES D\'AUTHENTIFICATION:');
       console.log('    - POST /api/auth/login');
       console.log('    - POST /api/auth/create-admin');
-      console.log('    - GET  /api/auth/debug-table');
-      console.log('    - POST /api/auth/quick-admin-token');
-      console.log('  👥 ROUTES UTILISATEURS:');
-      console.log('    - GET  /api/users/health');
-      console.log('    - GET  /api/users');
-      console.log('    - GET  /api/users/stats');
-      console.log('    - POST /api/users');
-      console.log('    - PUT  /api/users/:id');
-      console.log('    - PUT  /api/users/:id/status');
-      console.log('    - DELETE /api/users/:id');
-      console.log('    - POST /api/users/bulk-action');
-      console.log('  📋 ROUTES MISSIONS (NOUVELLES):');
-      console.log('    - GET  /api/missions');
+      console.log('  📋 ROUTES MISSIONS CORRIGÉES:');
+      console.log('    - GET  /api/missions ✅ CORRIGÉE');
+      console.log('    - POST /api/missions ✅ SKILLS CORRIGÉS');
+      console.log('    - GET  /api/missions/:id');
       console.log('    - DELETE /api/missions/:id');
       console.log('    - PATCH /api/missions/:id/status');
       console.log('    - GET  /api/missions/stats/overview');
@@ -773,25 +833,30 @@ async function startServer() {
       console.log('🎯 Testez le login avec:');
       console.log(`   curl -X POST http://localhost:${PORT}/api/auth/login \\`);
       console.log('     -H "Content-Type: application/json" \\');
-      console.log('     -d \'{"email": "admin@matrix.com", "password": "adminPassword"}\'');
+      console.log('     -d \'{"email": "hissein@gmail.com", "password": "client123"}\'');
       console.log('💡 Testez les missions avec:');
       console.log(`   curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:${PORT}/api/missions`);
+      console.log('🆕 Testez création mission avec:');
+      console.log(`   curl -X POST http://localhost:${PORT}/api/missions \\`);
+      console.log('     -H "Authorization: Bearer YOUR_TOKEN" \\');
+      console.log('     -H "Content-Type: application/json" \\');
+      console.log('     -d \'{"title":"Test Mission","description":"Description test","category":"Design","budget":{"min":500,"max":1000},"deadline":"2025-07-01","skills":["CSS","JavaScript"],"isUrgent":false}\'');
       console.log('================================');
     });
   } catch (error) {
-    console.error('Erreur lors du demarrage du serveur:', error);
+    console.error('Erreur lors du démarrage du serveur:', error);
     process.exit(1);
   }
 }
 
-// Gestion propre de l'arret du serveur
+// Gestion propre de l'arrêt du serveur
 process.on('SIGINT', () => {
-  console.log('\nArret du serveur...');
+  console.log('\nArrêt du serveur...');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
-  console.log('\nArret du serveur...');
+  console.log('\nArrêt du serveur...');
   process.exit(0);
 });
 

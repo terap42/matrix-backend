@@ -1,4 +1,4 @@
-// scripts/init-database.js
+// scripts/init-database.js - VERSION CORRIGÉE COMPLÈTE
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
@@ -19,15 +19,16 @@ async function initDatabase() {
     console.log('🔗 Connexion à MySQL...');
     connection = await mysql.createConnection(dbConfig);
     
-    // Créer la base de données (en utilisant .query() au lieu de .execute())
+    // Créer la base de données
     console.log('📊 Création de la base de données...');
     await connection.query(`CREATE DATABASE IF NOT EXISTS ${DATABASE_NAME}`);
     await connection.query(`USE ${DATABASE_NAME}`);
     
     console.log('📋 Création des tables...');
     
-    // Création des tables avec gestion explicite des erreurs
+    // ✅ ORDRE CORRECT DE CRÉATION DES TABLES (SANS DÉPENDANCES D'ABORD)
     const tables = [
+      // 1. Table users (base)
       `
       CREATE TABLE IF NOT EXISTS users (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -47,10 +48,22 @@ async function initDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB
       `,
+      
+      // 2. Table skills (indépendante) ✅ AVEC created_at
+      `
+      CREATE TABLE IF NOT EXISTS skills (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        name VARCHAR(100) UNIQUE NOT NULL,
+        category VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB
+      `,
+      
+      // 3. Table freelance_profiles (dépend de users)
       `
       CREATE TABLE IF NOT EXISTS freelance_profiles (
         id INT PRIMARY KEY AUTO_INCREMENT,
-        user_id INT NOT NULL,
+        user_id INT NOT NULL UNIQUE,
         hourly_rate DECIMAL(10,2),
         availability BOOLEAN DEFAULT TRUE,
         experience_years INT DEFAULT 0,
@@ -58,26 +71,26 @@ async function initDatabase() {
         average_rating DECIMAL(3,2) DEFAULT 0,
         total_earnings DECIMAL(12,2) DEFAULT 0,
         response_time_hours INT DEFAULT 24,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB
       `,
-      `
-      CREATE TABLE IF NOT EXISTS skills (
-        id INT PRIMARY KEY AUTO_INCREMENT,
-        name VARCHAR(100) UNIQUE NOT NULL,
-        category VARCHAR(50) NOT NULL
-      ) ENGINE=InnoDB
-      `,
+      
+      // 4. Table user_skills (dépend de users et skills)
       `
       CREATE TABLE IF NOT EXISTS user_skills (
         user_id INT,
         skill_id INT,
         proficiency ENUM('beginner', 'intermediate', 'expert') DEFAULT 'intermediate',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, skill_id),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
       ) ENGINE=InnoDB
       `,
+      
+      // 5. Table missions (dépend de users)
       `
       CREATE TABLE IF NOT EXISTS missions (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -93,6 +106,7 @@ async function initDatabase() {
         assigned_freelance_id INT NULL,
         status ENUM('open', 'assigned', 'in_progress', 'completed', 'cancelled') DEFAULT 'open',
         is_remote BOOLEAN DEFAULT TRUE,
+        is_urgent BOOLEAN DEFAULT FALSE,
         location VARCHAR(255),
         experience_level ENUM('beginner', 'intermediate', 'expert') DEFAULT 'intermediate',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -101,6 +115,21 @@ async function initDatabase() {
         FOREIGN KEY (assigned_freelance_id) REFERENCES users(id) ON DELETE SET NULL
       ) ENGINE=InnoDB
       `,
+      
+      // 6. Table mission_skills (dépend de missions et skills) ✅ CORRIGÉE
+      `
+      CREATE TABLE IF NOT EXISTS mission_skills (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        mission_id INT NOT NULL,
+        skill_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_mission_skill (mission_id, skill_id),
+        FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+        FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+      `,
+      
+      // 7. Table applications (dépend de missions et users)
       `
       CREATE TABLE IF NOT EXISTS applications (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -116,14 +145,32 @@ async function initDatabase() {
         FOREIGN KEY (freelance_id) REFERENCES users(id) ON DELETE CASCADE,
         UNIQUE KEY unique_application (mission_id, freelance_id)
       ) ENGINE=InnoDB
+      `,
+      
+      // 8. Table mission_reports (dépend de missions et users)
+      `
+      CREATE TABLE IF NOT EXISTS mission_reports (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        mission_id INT NOT NULL,
+        reporter_id INT NOT NULL,
+        reason TEXT NOT NULL,
+        status ENUM('pending', 'reviewed', 'resolved') DEFAULT 'pending',
+        admin_notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
+        FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
       `
     ];
 
-    for (const tableSql of tables) {
+    // Créer chaque table avec gestion d'erreurs
+    for (let i = 0; i < tables.length; i++) {
       try {
-        await connection.query(tableSql);
+        await connection.query(tables[i]);
+        console.log(`✅ Table ${i + 1}/${tables.length} créée`);
       } catch (err) {
-        console.error(`Erreur lors de la création d'une table:`, err);
+        console.error(`❌ Erreur lors de la création de la table ${i + 1}:`, err.message);
         throw err;
       }
     }
@@ -131,98 +178,257 @@ async function initDatabase() {
     console.log('👤 Création des utilisateurs de test...');
     
     // Hachage des mots de passe en parallèle
-    const [adminPassword, userPassword, freelancePassword] = await Promise.all([
-      bcrypt.hash('admin', 10),
-      bcrypt.hash('user', 10),
-      bcrypt.hash('freelance', 10)
+    const [adminPassword, clientPassword, freelancePassword] = await Promise.all([
+      bcrypt.hash('admin', 12),
+      bcrypt.hash('client123', 12),
+      bcrypt.hash('freelance123', 12)
     ]);
-    
     
     await connection.beginTransaction();
     
     try {
-      // Admin
+      // Créer Admin
       const [adminResult] = await connection.execute(
         `INSERT INTO users (email, password, user_type, first_name, last_name, is_active, email_verified) 
          VALUES (?, ?, 'admin', 'Admin', 'MATRIX', TRUE, TRUE)
-         ON DUPLICATE KEY UPDATE email = email`,
+         ON DUPLICATE KEY UPDATE 
+         password = VALUES(password),
+         user_type = VALUES(user_type),
+         updated_at = CURRENT_TIMESTAMP`,
         ['admin@matrix.com', adminPassword]
       );
+      console.log('✅ Admin créé/mis à jour');
       
-      // Client
+      // Créer Client
       const [clientResult] = await connection.execute(
         `INSERT INTO users (email, password, user_type, first_name, last_name, bio, location, is_active, email_verified) 
-         VALUES (?, ?, 'client', 'Client', 'Test', ?, ?, TRUE, TRUE)
-         ON DUPLICATE KEY UPDATE email = email`,
-        ['client@matrix.com', userPassword, 
-         'Je suis un client à la recherche de freelances talentueux', 'Paris, France']
+         VALUES (?, ?, 'client', 'Hissein', 'Test', ?, ?, TRUE, TRUE)
+         ON DUPLICATE KEY UPDATE 
+         password = VALUES(password),
+         user_type = VALUES(user_type),
+         updated_at = CURRENT_TIMESTAMP`,
+        [
+          'hissein@gmail.com', 
+          clientPassword, 
+          'Je suis un client à la recherche de freelances talentueux pour mes projets', 
+          'Paris, France'
+        ]
       );
+      console.log('✅ Client créé/mis à jour');
       
-      // Freelance
+      // Créer Freelance
       const [freelanceResult] = await connection.execute(
         `INSERT INTO users (email, password, user_type, first_name, last_name, bio, location, phone, is_active, email_verified) 
          VALUES (?, ?, 'freelance', 'Freelance', 'Test', ?, ?, ?, TRUE, TRUE)
-         ON DUPLICATE KEY UPDATE email = email`,
-        ['freelance@matrix.com', freelancePassword, 
-         'Développeur Full-Stack passionné avec 5 ans d\'expérience', 'Lyon, France', '+33123456789']
+         ON DUPLICATE KEY UPDATE 
+         password = VALUES(password),
+         user_type = VALUES(user_type),
+         updated_at = CURRENT_TIMESTAMP`,
+        [
+          'freelance@matrix.com', 
+          freelancePassword, 
+          'Développeur Full-Stack passionné avec 5 ans d\'expérience en React, Node.js et PHP', 
+          'Lyon, France', 
+          '+33123456789'
+        ]
       );
+      console.log('✅ Freelance créé/mis à jour');
       
-      // Récupération des IDs (même si l'utilisateur existait déjà)
-      const [existingFreelance] = await connection.execute(
+      // Créer profil freelance
+      const [freelanceUser] = await connection.execute(
         `SELECT id FROM users WHERE email = ?`,
         ['freelance@matrix.com']
       );
       
-      if (existingFreelance.length > 0) {
+      if (freelanceUser.length > 0) {
         await connection.execute(
           `INSERT INTO freelance_profiles 
            (user_id, hourly_rate, availability, experience_years, completed_missions, average_rating, total_earnings, response_time_hours) 
            VALUES (?, 45.00, TRUE, 5, 12, 4.8, 15000.00, 2)
-           ON DUPLICATE KEY UPDATE user_id = user_id`,
-          [existingFreelance[0].id]
+           ON DUPLICATE KEY UPDATE 
+           hourly_rate = VALUES(hourly_rate),
+           experience_years = VALUES(experience_years),
+           completed_missions = VALUES(completed_missions),
+           average_rating = VALUES(average_rating),
+           total_earnings = VALUES(total_earnings)`,
+          [freelanceUser[0].id]
         );
+        console.log('✅ Profil freelance créé/mis à jour');
       }
       
       await connection.commit();
+      console.log('✅ Transaction utilisateurs terminée');
+      
     } catch (err) {
       await connection.rollback();
+      console.error('❌ Erreur transaction utilisateurs:', err);
       throw err;
     }
     
     console.log('🛠️ Ajout des compétences...');
     const skills = [
+      // Développement
       ['JavaScript', 'Développement'],
+      ['TypeScript', 'Développement'],
       ['Angular', 'Développement'],
-      ['Node.js', 'Développement'],
       ['React', 'Développement'],
+      ['Vue.js', 'Développement'],
+      ['Node.js', 'Développement'],
       ['PHP', 'Développement'],
       ['Python', 'Développement'],
+      ['Java', 'Développement'],
+      ['C#', 'Développement'],
+      ['Laravel', 'Développement'],
+      ['Symfony', 'Développement'],
+      ['Express.js', 'Développement'],
+      ['NestJS', 'Développement'],
+      ['MySQL', 'Développement'],
+      ['PostgreSQL', 'Développement'],
+      ['MongoDB', 'Développement'],
+      ['Firebase', 'Développement'],
+      ['CSS', 'Développement'],
+      ['HTML', 'Développement'],
+      
+      // Design
       ['UI/UX Design', 'Design'],
       ['Photoshop', 'Design'],
+      ['Illustrator', 'Design'],
       ['Figma', 'Design'],
-      ['Rédaction web', 'Contenu'],
+      ['Sketch', 'Design'],
+      ['Adobe XD', 'Design'],
+      ['Branding', 'Design'],
+      ['Logo Design', 'Design'],
+      ['Web Design', 'Design'],
+      ['Graphic Design', 'Design'],
+      
+      // Marketing
       ['SEO', 'Marketing'],
-      ['Marketing digital', 'Marketing']
+      ['Marketing digital', 'Marketing'],
+      ['Google Ads', 'Marketing'],
+      ['Facebook Ads', 'Marketing'],
+      ['Instagram Marketing', 'Marketing'],
+      ['LinkedIn Marketing', 'Marketing'],
+      ['Content Marketing', 'Marketing'],
+      ['Email Marketing', 'Marketing'],
+      ['Analytics', 'Marketing'],
+      
+      // Contenu
+      ['Rédaction web', 'Contenu'],
+      ['Copywriting', 'Contenu'],
+      ['Rédaction technique', 'Contenu'],
+      ['Traduction', 'Contenu'],
+      ['Correction', 'Contenu']
     ];
     
-    // Insertion par lot plus efficace
-    const skillValues = skills.map(([name, category]) => [name, category]);
-    await connection.query(
-      `INSERT IGNORE INTO skills (name, category) VALUES ?`,
-      [skillValues]
+    // Insertion des compétences avec gestion d'erreurs
+    try {
+      for (const [name, category] of skills) {
+        await connection.execute(
+          `INSERT IGNORE INTO skills (name, category, created_at) VALUES (?, ?, NOW())`,
+          [name, category]
+        );
+      }
+      console.log(`✅ ${skills.length} compétences ajoutées`);
+    } catch (err) {
+      console.error('❌ Erreur ajout compétences:', err);
+    }
+    
+    // Créer quelques missions de test
+    console.log('📝 Création de missions de test...');
+    const [clientUser] = await connection.execute(
+      `SELECT id FROM users WHERE email = ?`,
+      ['hissein@gmail.com']
     );
     
-    console.log('✅ Base de données initialisée avec succès !');
-    console.log('\n📝 Comptes de test :');
-    console.log('   - Admin: admin@matrix.com / admin');
-    console.log('   - Client: client@matrix.com / user');
-    console.log('   - Freelance: freelance@matrix.com / freelance');
-    console.log('\n🔗 Connexion MySQL:');
-    console.log(`   - Hôte: ${dbConfig.host}`);
-    console.log(`   - Base: ${DATABASE_NAME}`);
+    if (clientUser.length > 0) {
+      const clientId = clientUser[0].id;
+      const testMissions = [
+        {
+          title: 'Développement site web vitrine',
+          description: 'Création d\'un site web moderne et responsive pour présenter les services de notre entreprise. Design épuré et navigation intuitive requise.',
+          category: 'Développement',
+          budget_min: 1500,
+          budget_max: 2500,
+          deadline: '2025-08-15',
+          skills: ['JavaScript', 'React', 'CSS']
+        },
+        {
+          title: 'Design logo et identité visuelle',
+          description: 'Création d\'un logo professionnel et de l\'identité visuelle complète pour une startup tech. Recherche créativité et originalité.',
+          category: 'Design',
+          budget_min: 800,
+          budget_max: 1200,
+          deadline: '2025-07-30',
+          skills: ['UI/UX Design', 'Photoshop', 'Illustrator']
+        },
+        {
+          title: 'Stratégie marketing digital',
+          description: 'Élaboration d\'une stratégie marketing complète pour le lancement d\'un nouveau produit. Inclut réseaux sociaux et SEO.',
+          category: 'Marketing',
+          budget_min: 600,
+          budget_max: 1000,
+          deadline: '2025-07-20',
+          skills: ['SEO', 'Marketing digital', 'Google Ads']
+        }
+      ];
+      
+      for (const mission of testMissions) {
+        try {
+          // Créer la mission
+          const [missionResult] = await connection.execute(`
+            INSERT INTO missions (title, description, category, budget_min, budget_max, currency, deadline, client_id, status, is_remote, experience_level) 
+            VALUES (?, ?, ?, ?, ?, 'EUR', ?, ?, 'open', 1, 'intermediate')
+          `, [
+            mission.title, 
+            mission.description, 
+            mission.category, 
+            mission.budget_min, 
+            mission.budget_max, 
+            mission.deadline, 
+            clientId
+          ]);
+          
+          const missionId = missionResult.insertId;
+          
+          // Ajouter les skills à la mission
+          for (const skillName of mission.skills) {
+            const [skillResult] = await connection.execute(
+              'SELECT id FROM skills WHERE name = ?',
+              [skillName]
+            );
+            
+            if (skillResult.length > 0) {
+              await connection.execute(
+                'INSERT IGNORE INTO mission_skills (mission_id, skill_id) VALUES (?, ?)',
+                [missionId, skillResult[0].id]
+              );
+            }
+          }
+          
+          console.log(`✅ Mission créée: ${mission.title}`);
+        } catch (err) {
+          console.log('⚠️ Mission test déjà existante ou erreur:', mission.title);
+        }
+      }
+      console.log('✅ Missions de test créées');
+    }
+    
+    console.log('\n🎉 Base de données initialisée avec succès !');
+    console.log('\n📝 Comptes de test créés :');
+    console.log('   👑 Admin: admin@matrix.com / admin');
+    console.log('   🏢 Client: hissein@gmail.com / client123');
+    console.log('   💼 Freelance: freelance@matrix.com / freelance123');
+    console.log('\n🔗 Informations de connexion :');
+    console.log(`   📍 Hôte: ${dbConfig.host}`);
+    console.log(`   🗄️  Base: ${DATABASE_NAME}`);
+    console.log(`   📊 Tables: users, freelance_profiles, skills, missions, applications, etc.`);
+    console.log('\n✅ Tables avec created_at corrigées');
+    console.log('✅ Relations entre missions et skills configurées');
+    console.log('\n🚀 Prêt pour le développement !');
     
   } catch (error) {
-    console.error('❌ Erreur critique:', error);
+    console.error('\n❌ Erreur critique lors de l\'initialisation:', error);
+    console.error('Stack trace:', error.stack);
     process.exit(1);
   } finally {
     if (connection) {
@@ -234,8 +440,15 @@ async function initDatabase() {
 
 // Gestion des erreurs non catchées
 process.on('unhandledRejection', (err) => {
-  console.error('⚠️ Erreur non gérée:', err);
+  console.error('⚠️ Erreur Promise non gérée:', err);
   process.exit(1);
 });
 
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Exception non catchée:', err);
+  process.exit(1);
+});
+
+// Lancement du script
+console.log('🔧 Initialisation de la base de données MATRIX...');
 initDatabase();
