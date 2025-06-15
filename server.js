@@ -1,4 +1,4 @@
-// server.js - VERSION COMPLÈTE CORRIGÉE
+// server.js - VERSION COMPLÈTE AVEC INSCRIPTION
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
@@ -99,17 +99,16 @@ async function handleMissionSkills(skillNames, missionId, connection) {
         skillId = existingSkills[0].id;
         console.log(`✅ Skill existant trouvé: ${trimmedSkill} (ID: ${skillId})`);
       } else {
-        // Créer un nouveau skill - AVEC created_at corrigé
+        // Créer un nouveau skill
         try {
           const [insertResult] = await connection.execute(
-            'INSERT INTO skills (name, category, created_at) VALUES (?, ?, NOW())',
-            [trimmedSkill, 'général'] // Catégorie par défaut
+            'INSERT INTO skills (name, category) VALUES (?, ?)',
+            [trimmedSkill, 'général']
           );
           skillId = insertResult.insertId;
           console.log(`✅ Nouveau skill créé: ${trimmedSkill} (ID: ${skillId})`);
         } catch (insertError) {
           console.error(`❌ Erreur insertion skill ${trimmedSkill}:`, insertError);
-          // Si erreur d'insertion, essayer de récupérer le skill (peut-être créé entre temps)
           const [retrySkills] = await connection.execute(
             'SELECT id FROM skills WHERE LOWER(name) = LOWER(?)',
             [trimmedSkill]
@@ -119,7 +118,7 @@ async function handleMissionSkills(skillNames, missionId, connection) {
             console.log(`✅ Skill récupéré après erreur: ${trimmedSkill} (ID: ${skillId})`);
           } else {
             console.error(`❌ Impossible de créer/récupérer skill: ${trimmedSkill}`);
-            continue; // Passer au skill suivant
+            continue;
           }
         }
       }
@@ -130,7 +129,7 @@ async function handleMissionSkills(skillNames, missionId, connection) {
         // Associer le skill à la mission
         try {
           await connection.execute(
-            'INSERT IGNORE INTO mission_skills (mission_id, skill_id, created_at) VALUES (?, ?, NOW())',
+            'INSERT IGNORE INTO mission_skills (mission_id, skill_id) VALUES (?, ?)',
             [missionId, skillId]
           );
           console.log(`✅ Skill ${trimmedSkill} associé à la mission ${missionId}`);
@@ -149,7 +148,7 @@ async function handleMissionSkills(skillNames, missionId, connection) {
   }
 }
 
-// ✅ ======== ROUTES MISSIONS COMPLÈTES CORRIGÉES ========
+// ✅ ======== ROUTES MISSIONS COMPLÈTES ========
 
 // GET /api/missions - Liste des missions avec filtres
 app.get('/api/missions', authMiddleware, async (req, res) => {
@@ -188,7 +187,6 @@ app.get('/api/missions', authMiddleware, async (req, res) => {
 
     const whereClause = whereConditions.length > 0 ? 'WHERE ' + whereConditions.join(' AND ') : '';
 
-    // Requête principale avec informations client et compétences
     const query = `
       SELECT 
         m.*,
@@ -211,7 +209,6 @@ app.get('/api/missions', authMiddleware, async (req, res) => {
     queryParams.push(parseInt(limit), parseInt(offset));
     const [missions] = await pool.execute(query, queryParams);
 
-    // Formatage des missions pour le frontend
     const formattedMissions = missions.map(mission => ({
       id: mission.id.toString(),
       title: mission.title,
@@ -235,7 +232,7 @@ app.get('/api/missions', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      missions: formattedMissions // ✅ Format attendu par le frontend
+      missions: formattedMissions
     });
 
   } catch (error) {
@@ -248,7 +245,7 @@ app.get('/api/missions', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/missions - Créer une nouvelle mission ✅ CORRIGÉE
+// POST /api/missions - Créer une nouvelle mission
 app.post('/api/missions', authMiddleware, async (req, res) => {
   let connection;
   
@@ -266,7 +263,6 @@ app.post('/api/missions', authMiddleware, async (req, res) => {
       isUrgent
     } = req.body;
 
-    // Validation des champs obligatoires
     if (!title || !description || !category || !budget || !deadline) {
       return res.status(400).json({
         success: false,
@@ -274,7 +270,6 @@ app.post('/api/missions', authMiddleware, async (req, res) => {
       });
     }
 
-    // Validation du budget
     if (!budget.min || !budget.max || budget.min <= 0 || budget.max <= 0) {
       return res.status(400).json({
         success: false,
@@ -289,7 +284,6 @@ app.post('/api/missions', authMiddleware, async (req, res) => {
       });
     }
 
-    // Validation de la date
     const deadlineDate = new Date(deadline);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -301,12 +295,10 @@ app.post('/api/missions', authMiddleware, async (req, res) => {
       });
     }
 
-    // Utiliser une transaction pour assurer la cohérence
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
     try {
-      // Insertion de la mission
       const [result] = await connection.execute(`
         INSERT INTO missions (
           title, description, category, budget_min, budget_max, 
@@ -327,14 +319,12 @@ app.post('/api/missions', authMiddleware, async (req, res) => {
       const missionId = result.insertId;
       console.log('✅ Mission créée avec ID:', missionId);
 
-      // Gestion des compétences avec la fonction corrigée
       if (skills && skills.length > 0) {
         await handleMissionSkills(skills, missionId, connection);
       }
 
       await connection.commit();
       
-      // Récupérer la mission complète pour la réponse
       const [newMission] = await pool.execute(`
         SELECT 
           m.*,
@@ -376,7 +366,7 @@ app.post('/api/missions', authMiddleware, async (req, res) => {
       res.status(201).json({
         success: true,
         message: 'Mission créée avec succès',
-        mission: formattedMission // ✅ Format attendu par le frontend
+        mission: formattedMission
       });
 
     } catch (error) {
@@ -434,7 +424,6 @@ app.get('/api/missions/:id', authMiddleware, async (req, res) => {
 
     const mission = missions[0];
     
-    // Calcul des statistiques client
     const [clientStats] = await pool.execute(`
       SELECT 
         COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_projects,
@@ -602,15 +591,6 @@ app.patch('/api/missions/:id/status', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/health - Route de santé pour tester la connexion
-app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'API MATRIX opérationnelle',
-    timestamp: new Date().toISOString()
-  });
-});
-
 // ✅ ======== ROUTES D'AUTHENTIFICATION ========
 
 // Route de test
@@ -622,19 +602,35 @@ app.get('/', (req, res) => {
   });
 });
 
-// Route de test API
+// GET /api/health - Route de santé
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API MATRIX opérationnelle',
+    timestamp: new Date().toISOString(),
+    routes: {
+      login: '/api/auth/login',
+      register: '/api/auth/register',
+      missions: '/api/missions',
+      health: '/api/health'
+    }
+  });
+});
+
+// Route de test API - MISE À JOUR
 app.get('/api/test', (req, res) => {
   res.json({ 
     message: 'API MATRIX fonctionne',
     routes_disponibles: [
       'GET /api/test',
-      'GET /api/health',
+      'GET /api/health ✅',
       'POST /api/auth/login',
+      'POST /api/auth/register ✅ NOUVEAU',
+      'POST /api/auth/check-email ✅ NOUVEAU',
       'POST /api/auth/create-admin',
-      'GET /api/users/health',
-      '--- ROUTES MISSIONS CORRIGÉES ---',
+      '--- ROUTES MISSIONS ---',
       'GET /api/missions',
-      'POST /api/missions ✅ CORRIGÉE',
+      'POST /api/missions',
       'GET /api/missions/:id',
       'DELETE /api/missions/:id',
       'PATCH /api/missions/:id/status',
@@ -643,7 +639,7 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// Route login principale
+// POST /api/auth/login - Connexion
 app.post('/api/auth/login', async (req, res) => {
   try {
     console.log('🔐 === LOGIN MATRIX ===');
@@ -651,12 +647,14 @@ app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
     
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email et mot de passe requis' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email et mot de passe requis' 
+      });
     }
     
     console.log('🔍 Tentative login:', email);
     
-    // Chercher l'utilisateur
     const [users] = await pool.execute(
       'SELECT * FROM users WHERE email = ? AND is_active = 1',
       [email]
@@ -664,21 +662,25 @@ app.post('/api/auth/login', async (req, res) => {
     
     if (users.length === 0) {
       console.log('❌ Utilisateur non trouvé');
-      return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'Email ou mot de passe incorrect' 
+      });
     }
     
     const user = users[0];
     console.log('✅ Utilisateur trouvé:', user.email);
     
-    // Vérifier le mot de passe
     const passwordValid = await bcrypt.compare(password, user.password);
     
     if (!passwordValid) {
       console.log('❌ Mot de passe incorrect');
-      return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'Email ou mot de passe incorrect' 
+      });
     }
     
-    // Générer le token
     const token = jwt.sign(
       {
         id: user.id,
@@ -694,6 +696,7 @@ app.post('/api/auth/login', async (req, res) => {
     console.log('✅ Login réussi pour:', user.email);
     
     res.json({
+      success: true,
       message: 'Connexion réussie',
       token: token,
       user: {
@@ -709,11 +712,245 @@ app.post('/api/auth/login', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Erreur login:', error);
-    res.status(500).json({ error: 'Erreur serveur' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Erreur serveur' 
+    });
   }
 });
 
-// Route pour créer un admin
+// ✅ POST /api/auth/register - NOUVELLE ROUTE D'INSCRIPTION
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    console.log('📝 === INSCRIPTION MATRIX ===');
+    
+    const { 
+      email, 
+      password, 
+      user_type, 
+      first_name, 
+      last_name,
+      phone,
+      location,
+      bio 
+    } = req.body;
+    
+    console.log('📝 Tentative inscription:', { email, user_type, first_name, last_name });
+    
+    // Validation des champs obligatoires
+    if (!email || !password || !user_type || !first_name || !last_name) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Tous les champs obligatoires doivent être remplis' 
+      });
+    }
+    
+    // Validation du type d'utilisateur
+    if (!['freelance', 'client'].includes(user_type)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Type d\'utilisateur invalide' 
+      });
+    }
+    
+    // Validation de l'email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Format d\'email invalide' 
+      });
+    }
+    
+    // Validation du mot de passe
+    if (password.length < 6) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Le mot de passe doit contenir au moins 6 caractères' 
+      });
+    }
+    
+    // Vérifier si l'utilisateur existe déjà
+    const [existingUsers] = await pool.execute(
+      'SELECT id FROM users WHERE email = ?',
+      [email]
+    );
+    
+    if (existingUsers.length > 0) {
+      console.log('❌ Email déjà utilisé:', email);
+      return res.status(409).json({ 
+        success: false,
+        error: 'Un compte existe déjà avec cette adresse email' 
+      });
+    }
+    
+    // Hash du mot de passe
+    console.log('🔐 Hachage du mot de passe...');
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    // Utiliser une transaction pour assurer la cohérence
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // Créer l'utilisateur
+      const [userResult] = await connection.execute(`
+        INSERT INTO users (
+          email, password, user_type, first_name, last_name,
+          phone, location, bio, is_active, email_verified, 
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, FALSE, NOW(), NOW())
+      `, [
+        email, 
+        hashedPassword, 
+        user_type, 
+        first_name, 
+        last_name,
+        phone || null,
+        location || null,
+        bio || null
+      ]);
+      
+      const userId = userResult.insertId;
+      console.log('✅ Utilisateur créé avec ID:', userId);
+      
+      // Si c'est un freelance, créer son profil
+      if (user_type === 'freelance') {
+        await connection.execute(`
+          INSERT INTO freelance_profiles (
+            user_id, hourly_rate, availability, experience_years, 
+            completed_missions, average_rating, total_earnings, response_time_hours
+          ) VALUES (?, 0, TRUE, 0, 0, 0, 0, 24)
+        `, [userId]);
+        
+        console.log('✅ Profil freelance créé pour utilisateur:', userId);
+      }
+      
+      await connection.commit();
+      connection.release();
+      
+      // Générer le token JWT
+      const token = jwt.sign(
+        {
+          id: userId,
+          email: email,
+          user_type: user_type,
+          first_name: first_name,
+          last_name: last_name
+        },
+        process.env.JWT_SECRET || 'matrix-secret-key',
+        { expiresIn: '24h' }
+      );
+      
+      console.log('✅ Inscription réussie pour:', email);
+      
+      // Récupérer les données complètes de l'utilisateur
+      const [newUser] = await pool.execute(`
+        SELECT 
+          u.id, u.email, u.user_type, u.first_name, u.last_name, 
+          u.avatar, u.bio, u.location, u.phone, u.website, u.is_active,
+          fp.hourly_rate, fp.availability, fp.experience_years, 
+          fp.completed_missions, fp.average_rating, fp.total_earnings, fp.response_time_hours
+        FROM users u
+        LEFT JOIN freelance_profiles fp ON u.id = fp.user_id
+        WHERE u.id = ?
+      `, [userId]);
+      
+      const user = newUser[0];
+      
+      // Formatter la réponse selon le format attendu par le frontend
+      const userResponse = {
+        id: user.id,
+        email: user.email,
+        user_type: user.user_type,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        avatar: user.avatar,
+        bio: user.bio,
+        location: user.location,
+        phone: user.phone,
+        website: user.website
+      };
+      
+      // Ajouter le profil freelance si applicable
+      if (user.user_type === 'freelance' && user.hourly_rate !== undefined) {
+        userResponse.freelance_profile = {
+          hourly_rate: user.hourly_rate || 0,
+          availability: user.availability || true,
+          experience_years: user.experience_years || 0,
+          completed_missions: user.completed_missions || 0,
+          average_rating: user.average_rating || 0,
+          total_earnings: user.total_earnings || 0,
+          response_time_hours: user.response_time_hours || 24
+        };
+      }
+      
+      res.status(201).json({
+        success: true,
+        message: 'Inscription réussie',
+        token: token,
+        user: userResponse
+      });
+      
+    } catch (dbError) {
+      await connection.rollback();
+      connection.release();
+      throw dbError;
+    }
+    
+  } catch (error) {
+    console.error('❌ Erreur inscription:', error);
+    
+    let errorMessage = 'Erreur lors de l\'inscription';
+    
+    if (error.code === 'ER_DUP_ENTRY') {
+      errorMessage = 'Un compte existe déjà avec cette adresse email';
+    } else if (error.code === 'ER_DATA_TOO_LONG') {
+      errorMessage = 'Une des données fournies est trop longue';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ✅ POST /api/auth/check-email - Vérifier si un email existe
+app.post('/api/auth/check-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email requis' 
+      });
+    }
+    
+    const [users] = await pool.execute(
+      'SELECT id FROM users WHERE email = ?',
+      [email]
+    );
+    
+    res.json({
+      success: true,
+      exists: users.length > 0
+    });
+    
+  } catch (error) {
+    console.error('❌ Erreur vérification email:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Erreur serveur' 
+    });
+  }
+});
+
+// POST /api/auth/create-admin - Créer un admin
 app.post('/api/auth/create-admin', async (req, res) => {
   try {
     console.log('👑 === CRÉATION ADMIN MATRIX ===');
@@ -721,27 +958,26 @@ app.post('/api/auth/create-admin', async (req, res) => {
     const { email, password, first_name, last_name } = req.body;
     
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email et mot de passe requis' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email et mot de passe requis' 
+      });
     }
     
-    // Hash du mot de passe
     const hashedPassword = await bcrypt.hash(password, 12);
     
-    // Vérifier si l'utilisateur existe
     const [existing] = await pool.execute(
       'SELECT id FROM users WHERE email = ?',
       [email]
     );
     
     if (existing.length > 0) {
-      // Mettre à jour utilisateur existant
       await pool.execute(
         'UPDATE users SET user_type = ?, password = ?, updated_at = NOW() WHERE email = ?',
         ['admin', hashedPassword, email]
       );
       console.log('✅ Utilisateur existant mis à jour en admin');
     } else {
-      // Créer nouvel admin
       await pool.execute(`
         INSERT INTO users (
           first_name, last_name, email, password, user_type,
@@ -753,6 +989,7 @@ app.post('/api/auth/create-admin', async (req, res) => {
     }
     
     res.json({ 
+      success: true,
       message: 'Admin créé/mis à jour avec succès',
       email: email
     });
@@ -760,6 +997,7 @@ app.post('/api/auth/create-admin', async (req, res) => {
   } catch (error) {
     console.error('❌ Erreur création admin:', error);
     res.status(500).json({ 
+      success: false,
       error: 'Erreur création admin',
       details: error.message
     });
@@ -790,14 +1028,28 @@ app.use((req, res) => {
   res.status(404).json({
     error: 'Route non trouvée',
     path: req.originalUrl,
-    method: req.method
+    method: req.method,
+    available_routes: [
+      'GET /',
+      'GET /api/health',
+      'GET /api/test',
+      'POST /api/auth/login',
+      'POST /api/auth/register',
+      'POST /api/auth/check-email',
+      'POST /api/auth/create-admin',
+      'GET /api/missions',
+      'POST /api/missions',
+      'GET /api/missions/:id',
+      'DELETE /api/missions/:id',
+      'PATCH /api/missions/:id/status',
+      'GET /api/missions/stats/overview'
+    ]
   });
 });
 
 // Démarrage du serveur
 async function startServer() {
   try {
-    // Tester la connexion à la base de données
     const dbConnected = await testConnection();
     if (!dbConnected) {
       console.error('Impossible de se connecter à la base de données');
@@ -817,30 +1069,34 @@ async function startServer() {
       console.log(`Base de données: ${process.env.DB_NAME}`);
       console.log('Routes disponibles:');
       console.log('  📍 ROUTES DE TEST:');
+      console.log('    - GET  /');
       console.log('    - GET  /api/test');
-      console.log('    - GET  /api/health ✅ NOUVEAU');
+      console.log('    - GET  /api/health ✅');
       console.log('  🔐 ROUTES D\'AUTHENTIFICATION:');
       console.log('    - POST /api/auth/login');
+      console.log('    - POST /api/auth/register ✅ NOUVEAU');
+      console.log('    - POST /api/auth/check-email ✅ NOUVEAU');
       console.log('    - POST /api/auth/create-admin');
-      console.log('  📋 ROUTES MISSIONS CORRIGÉES:');
-      console.log('    - GET  /api/missions ✅ CORRIGÉE');
-      console.log('    - POST /api/missions ✅ SKILLS CORRIGÉS');
+      console.log('  📋 ROUTES MISSIONS:');
+      console.log('    - GET  /api/missions');
+      console.log('    - POST /api/missions');
       console.log('    - GET  /api/missions/:id');
       console.log('    - DELETE /api/missions/:id');
       console.log('    - PATCH /api/missions/:id/status');
       console.log('    - GET  /api/missions/stats/overview');
       console.log('================================');
-      console.log('🎯 Testez le login avec:');
+      console.log('🎯 Testez l\'inscription avec:');
+      console.log(`   curl -X POST http://localhost:${PORT}/api/auth/register \\`);
+      console.log('     -H "Content-Type: application/json" \\');
+      console.log('     -d \'{"email":"test@example.com","password":"password123","user_type":"client","first_name":"Test","last_name":"User"}\'');
+      console.log('🎯 Testez la connexion avec:');
       console.log(`   curl -X POST http://localhost:${PORT}/api/auth/login \\`);
       console.log('     -H "Content-Type: application/json" \\');
-      console.log('     -d \'{"email": "hissein@gmail.com", "password": "client123"}\'');
+      console.log('     -d \'{"email":"hissein@gmail.com","password":"client123"}\'');
       console.log('💡 Testez les missions avec:');
       console.log(`   curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:${PORT}/api/missions`);
-      console.log('🆕 Testez création mission avec:');
-      console.log(`   curl -X POST http://localhost:${PORT}/api/missions \\`);
-      console.log('     -H "Authorization: Bearer YOUR_TOKEN" \\');
-      console.log('     -H "Content-Type: application/json" \\');
-      console.log('     -d \'{"title":"Test Mission","description":"Description test","category":"Design","budget":{"min":500,"max":1000},"deadline":"2025-07-01","skills":["CSS","JavaScript"],"isUrgent":false}\'');
+      console.log('🔍 Testez la santé du serveur:');
+      console.log(`   curl http://localhost:${PORT}/api/health`);
       console.log('================================');
     });
   } catch (error) {
