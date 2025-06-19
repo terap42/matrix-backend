@@ -1,4 +1,4 @@
-// scripts/init-database.js - VERSION CORRIGÉE COMPLÈTE
+// scripts/init-database.js - VERSION COMPLÈTE FINALE AVEC PORTFOLIO_PROJECTS
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
@@ -59,12 +59,12 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 3. Table freelance_profiles (dépend de users)
+      // 3. Table freelance_profiles (dépend de users) ✅ AVEC created_at et updated_at
       `
       CREATE TABLE IF NOT EXISTS freelance_profiles (
         id INT PRIMARY KEY AUTO_INCREMENT,
         user_id INT NOT NULL UNIQUE,
-        hourly_rate DECIMAL(10,2),
+        hourly_rate DECIMAL(10,2) DEFAULT 0,
         availability BOOLEAN DEFAULT TRUE,
         experience_years INT DEFAULT 0,
         completed_missions INT DEFAULT 0,
@@ -77,12 +77,12 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 4. Table user_skills (dépend de users et skills)
+      // 4. Table user_skills (dépend de users et skills) ✅ AVEC created_at et proficiency corrigé
       `
       CREATE TABLE IF NOT EXISTS user_skills (
         user_id INT,
         skill_id INT,
-        proficiency ENUM('beginner', 'intermediate', 'expert') DEFAULT 'intermediate',
+        proficiency ENUM('debutant', 'intermediaire', 'avance', 'expert') DEFAULT 'intermediaire',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, skill_id),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -90,7 +90,23 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 5. Table missions (dépend de users)
+      // 5. ✅ NOUVELLE TABLE portfolio_projects (dépend de users)
+      `
+      CREATE TABLE IF NOT EXISTS portfolio_projects (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        freelance_id INT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL,
+        image_url VARCHAR(500),
+        project_url VARCHAR(500),
+        technologies JSON,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (freelance_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+      `,
+      
+      // 6. Table missions (dépend de users)
       `
       CREATE TABLE IF NOT EXISTS missions (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -116,7 +132,7 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 6. Table mission_skills (dépend de missions et skills) ✅ CORRIGÉE
+      // 7. Table mission_skills (dépend de missions et skills) ✅ CORRIGÉE
       `
       CREATE TABLE IF NOT EXISTS mission_skills (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -129,7 +145,7 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 7. Table applications (dépend de missions et users)
+      // 8. Table applications (dépend de missions et users)
       `
       CREATE TABLE IF NOT EXISTS applications (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -147,7 +163,7 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 8. Table mission_reports (dépend de missions et users)
+      // 9. Table mission_reports (dépend de missions et users)
       `
       CREATE TABLE IF NOT EXISTS mission_reports (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -219,7 +235,7 @@ async function initDatabase() {
       // Créer Freelance
       const [freelanceResult] = await connection.execute(
         `INSERT INTO users (email, password, user_type, first_name, last_name, bio, location, phone, is_active, email_verified) 
-         VALUES (?, ?, 'freelance', 'Freelance', 'Test', ?, ?, ?, TRUE, TRUE)
+         VALUES (?, ?, 'freelance', 'Alexandre', 'Martin', ?, ?, ?, TRUE, TRUE)
          ON DUPLICATE KEY UPDATE 
          password = VALUES(password),
          user_type = VALUES(user_type),
@@ -227,33 +243,78 @@ async function initDatabase() {
         [
           'freelance@matrix.com', 
           freelancePassword, 
-          'Développeur Full-Stack passionné avec 5 ans d\'expérience en React, Node.js et PHP', 
+          'Développeur Full-Stack passionné avec 5 ans d\'expérience en React, Node.js et PHP. Spécialisé dans la création d\'applications web modernes et intuitives.', 
           'Lyon, France', 
           '+33123456789'
         ]
       );
       console.log('✅ Freelance créé/mis à jour');
       
-      // Créer profil freelance
+      // Créer profil freelance avec compétences et portfolio
       const [freelanceUser] = await connection.execute(
         `SELECT id FROM users WHERE email = ?`,
         ['freelance@matrix.com']
       );
       
       if (freelanceUser.length > 0) {
+        const freelanceId = freelanceUser[0].id;
+        
+        // Créer le profil freelance
         await connection.execute(
           `INSERT INTO freelance_profiles 
-           (user_id, hourly_rate, availability, experience_years, completed_missions, average_rating, total_earnings, response_time_hours) 
-           VALUES (?, 45.00, TRUE, 5, 12, 4.8, 15000.00, 2)
+           (user_id, hourly_rate, availability, experience_years, completed_missions, average_rating, total_earnings, response_time_hours, created_at, updated_at) 
+           VALUES (?, 45.00, TRUE, 5, 12, 4.8, 15000.00, 2, NOW(), NOW())
            ON DUPLICATE KEY UPDATE 
            hourly_rate = VALUES(hourly_rate),
            experience_years = VALUES(experience_years),
            completed_missions = VALUES(completed_missions),
            average_rating = VALUES(average_rating),
-           total_earnings = VALUES(total_earnings)`,
-          [freelanceUser[0].id]
+           total_earnings = VALUES(total_earnings),
+           updated_at = NOW()`,
+          [freelanceId]
         );
         console.log('✅ Profil freelance créé/mis à jour');
+        
+        // Ajouter des compétences au freelance (après avoir créé les skills)
+        console.log('⏳ Compétences freelance seront ajoutées après création des skills...');
+        
+        // Créer des projets portfolio pour le freelance
+        const portfolioProjects = [
+          {
+            title: 'Application E-commerce React',
+            description: 'Développement d\'une plateforme e-commerce complète avec React, Node.js et MongoDB. Interface utilisateur moderne avec panier d\'achat, paiement Stripe et gestion des commandes.',
+            image_url: 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400&h=300&fit=crop',
+            project_url: 'https://demo-ecommerce.example.com',
+            technologies: JSON.stringify(['React', 'Node.js', 'MongoDB', 'Stripe', 'Express.js'])
+          },
+          {
+            title: 'Dashboard Analytics',
+            description: 'Création d\'un tableau de bord analytique en temps réel pour une startup fintech. Visualisation de données complexes avec graphiques interactifs et rapports automatisés.',
+            image_url: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400&h=300&fit=crop',
+            project_url: 'https://dashboard-analytics.example.com',
+            technologies: JSON.stringify(['React', 'Chart.js', 'TypeScript', 'PostgreSQL', 'Socket.io'])
+          },
+          {
+            title: 'Site Web Corporate',
+            description: 'Refonte complète du site web d\'une entreprise de conseil avec focus sur l\'expérience utilisateur et l\'optimisation SEO. Design responsive et animations fluides.',
+            image_url: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=400&h=300&fit=crop',
+            project_url: 'https://corporate-site.example.com',
+            technologies: JSON.stringify(['HTML5', 'CSS3', 'JavaScript', 'GSAP', 'Webpack'])
+          }
+        ];
+        
+        for (const project of portfolioProjects) {
+          try {
+            await connection.execute(
+              `INSERT INTO portfolio_projects (freelance_id, title, description, image_url, project_url, technologies, created_at, updated_at) 
+               VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+              [freelanceId, project.title, project.description, project.image_url, project.project_url, project.technologies]
+            );
+          } catch (err) {
+            console.log(`⚠️ Erreur ajout projet ${project.title}:`, err.message);
+          }
+        }
+        console.log('✅ Projets portfolio créés');
       }
       
       await connection.commit();
@@ -333,6 +394,46 @@ async function initDatabase() {
       console.error('❌ Erreur ajout compétences:', err);
     }
     
+    // Maintenant ajouter les compétences au freelance
+    console.log('🎯 Ajout compétences au freelance...');
+    const [freelanceUser2] = await connection.execute(
+      `SELECT id FROM users WHERE email = ?`,
+      ['freelance@matrix.com']
+    );
+    
+    if (freelanceUser2.length > 0) {
+      const freelanceId = freelanceUser2[0].id;
+      const freelanceSkills = [
+        { name: 'React', level: 'expert' },
+        { name: 'Node.js', level: 'avance' },
+        { name: 'TypeScript', level: 'avance' },
+        { name: 'UI/UX Design', level: 'intermediaire' },
+        { name: 'JavaScript', level: 'expert' },
+        { name: 'CSS', level: 'avance' },
+        { name: 'HTML', level: 'expert' }
+      ];
+      
+      for (const skill of freelanceSkills) {
+        try {
+          // Récupérer l'ID de la compétence
+          const [skillResult] = await connection.execute(
+            'SELECT id FROM skills WHERE name = ?',
+            [skill.name]
+          );
+          
+          if (skillResult.length > 0) {
+            await connection.execute(
+              'INSERT IGNORE INTO user_skills (user_id, skill_id, proficiency, created_at) VALUES (?, ?, ?, NOW())',
+              [freelanceId, skillResult[0].id, skill.level]
+            );
+          }
+        } catch (err) {
+          console.log(`⚠️ Erreur ajout compétence ${skill.name}:`, err.message);
+        }
+      }
+      console.log('✅ Compétences freelance ajoutées');
+    }
+    
     // Créer quelques missions de test
     console.log('📝 Création de missions de test...');
     const [clientUser] = await connection.execute(
@@ -376,8 +477,8 @@ async function initDatabase() {
         try {
           // Créer la mission
           const [missionResult] = await connection.execute(`
-            INSERT INTO missions (title, description, category, budget_min, budget_max, currency, deadline, client_id, status, is_remote, experience_level) 
-            VALUES (?, ?, ?, ?, ?, 'EUR', ?, ?, 'open', 1, 'intermediate')
+            INSERT INTO missions (title, description, category, budget_min, budget_max, currency, deadline, client_id, status, is_remote, experience_level, created_at, updated_at) 
+            VALUES (?, ?, ?, ?, ?, 'EUR', ?, ?, 'open', 1, 'intermediate', NOW(), NOW())
           `, [
             mission.title, 
             mission.description, 
@@ -399,7 +500,7 @@ async function initDatabase() {
             
             if (skillResult.length > 0) {
               await connection.execute(
-                'INSERT IGNORE INTO mission_skills (mission_id, skill_id) VALUES (?, ?)',
+                'INSERT IGNORE INTO mission_skills (mission_id, skill_id, created_at) VALUES (?, ?, NOW())',
                 [missionId, skillResult[0].id]
               );
             }
@@ -421,10 +522,17 @@ async function initDatabase() {
     console.log('\n🔗 Informations de connexion :');
     console.log(`   📍 Hôte: ${dbConfig.host}`);
     console.log(`   🗄️  Base: ${DATABASE_NAME}`);
-    console.log(`   📊 Tables: users, freelance_profiles, skills, missions, applications, etc.`);
-    console.log('\n✅ Tables avec created_at corrigées');
+    console.log(`   📊 Tables: users, freelance_profiles, skills, missions, portfolio_projects, etc.`);
+    console.log('\n✅ Tables avec created_at/updated_at corrigées');
     console.log('✅ Relations entre missions et skills configurées');
+    console.log('✅ Table portfolio_projects ajoutée avec données de test');
+    console.log('✅ Profil freelance complet avec compétences et portfolio');
+    console.log('✅ Enum proficiency corrigé (debutant, intermediaire, avance, expert)');
     console.log('\n🚀 Prêt pour le développement !');
+    console.log('\n💡 Testez l\'API freelance-profile avec:');
+    console.log('   1. Connectez-vous: POST /api/auth/login');
+    console.log('   2. Récupérez le profil: GET /api/freelance-profile');
+    console.log('   3. Testez les stats: GET /api/freelance-profile/stats');
     
   } catch (error) {
     console.error('\n❌ Erreur critique lors de l\'initialisation:', error);

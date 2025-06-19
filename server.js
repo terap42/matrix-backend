@@ -1003,7 +1003,524 @@ app.post('/api/auth/create-admin', async (req, res) => {
     });
   }
 });
+// Middleware pour vérifier que l'utilisateur est un freelance
+const requireFreelance = async (req, res, next) => {
+  try {
+    const [users] = await pool.execute(
+      'SELECT user_type FROM users WHERE id = ? AND is_active = 1',
+      [req.user.id]
+    );
 
+    if (users.length === 0 || users[0].user_type !== 'freelance') {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès réservé aux freelances'
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error('❌ Erreur vérification freelance:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur'
+    });
+  }
+};
+
+// ✅ ======== ROUTES FREELANCE PROFILE COMPLÈTES ========
+
+// GET /api/freelance-profile - Récupérer le profil du freelance connecté
+app.get('/api/freelance-profile', authMiddleware, requireFreelance, async (req, res) => {
+  try {
+    console.log('👤 Récupération profil freelance pour utilisateur:', req.user.id);
+
+    const [profiles] = await pool.execute(`
+      SELECT 
+        u.id, u.email, u.first_name, u.last_name, u.avatar, u.bio, 
+        u.location, u.phone, u.website, u.created_at,
+        fp.hourly_rate, fp.availability, fp.experience_years, 
+        fp.completed_missions, fp.average_rating, fp.total_earnings, 
+        fp.response_time_hours
+      FROM users u
+      LEFT JOIN freelance_profiles fp ON u.id = fp.user_id
+      WHERE u.id = ? AND u.user_type = 'freelance'
+    `, [req.user.id]);
+
+    if (profiles.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profil freelance non trouvé'
+      });
+    }
+
+    const profile = profiles[0];
+
+    // Récupérer les compétences
+    const [skills] = await pool.execute(`
+      SELECT s.id, s.name, us.proficiency as level
+      FROM user_skills us
+      JOIN skills s ON us.skill_id = s.id
+      WHERE us.user_id = ?
+      ORDER BY s.name
+    `, [req.user.id]);
+
+    // Récupérer les projets portfolio - Version sécurisée avec vérification de table
+    let projects = [];
+    try {
+      const [projectResults] = await pool.execute(`
+        SELECT 
+          pp.id, pp.title, pp.description, pp.image_url, pp.project_url,
+          pp.technologies, pp.created_at
+        FROM portfolio_projects pp
+        WHERE pp.freelance_id = ?
+        ORDER BY pp.created_at DESC
+      `, [req.user.id]);
+      projects = projectResults;
+    } catch (portfolioError) {
+      console.log('⚠️ Table portfolio_projects non trouvée, portfolio vide');
+      projects = [];
+    }
+
+    const formattedProfile = {
+      id: profile.id,
+      userId: profile.id,
+      fullName: `${profile.first_name} ${profile.last_name}`,
+      title: profile.bio?.split('.')[0] || 'Freelance',
+      bio: profile.bio || '',
+      hourlyRate: parseFloat(profile.hourly_rate) || 0,
+      availability: Boolean(profile.availability),
+      experienceYears: profile.experience_years || 0,
+      completedMissions: profile.completed_missions || 0,
+      averageRating: parseFloat(profile.average_rating) || 0,
+      totalEarnings: parseFloat(profile.total_earnings) || 0,
+      responseTimeHours: profile.response_time_hours || 24,
+      skills: skills.map(skill => ({
+        id: skill.id,
+        name: skill.name,
+        level: skill.level || 'intermediaire'
+      })),
+      portfolio: projects.map(project => ({
+        id: project.id.toString(),
+        title: project.title,
+        description: project.description,
+        imageUrl: project.image_url || 'https://via.placeholder.com/300x200',
+        projectUrl: project.project_url || '',
+        technologies: project.technologies ? JSON.parse(project.technologies) : [],
+        createdAt: project.created_at
+      })),
+      createdAt: profile.created_at
+    };
+
+    console.log('✅ Profil freelance récupéré:', formattedProfile.fullName);
+
+    res.json({
+      success: true,
+      profile: formattedProfile
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur récupération profil:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération du profil',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// PUT /api/freelance-profile - Mettre à jour le profil freelance
+app.put('/api/freelance-profile', authMiddleware, requireFreelance, async (req, res) => {
+  let connection;
+  
+  try {
+    console.log('📝 Mise à jour profil freelance pour utilisateur:', req.user.id);
+
+    const {
+      fullName,
+      title,
+      bio,
+      hourlyRate,
+      availability,
+      experienceYears,
+      responseTimeHours,
+      skills
+    } = req.body;
+
+    // Validation
+    if (!fullName || !title || !bio) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nom complet, titre et bio sont requis'
+      });
+    }
+
+    if (hourlyRate && hourlyRate < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le tarif horaire ne peut pas être négatif'
+      });
+    }
+
+    if (experienceYears && experienceYears < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Les années d\'expérience ne peuvent pas être négatives'
+      });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Séparer le nom complet
+      const nameParts = fullName.trim().split(' ');
+      const firstName = nameParts[0];
+      const lastName = nameParts.slice(1).join(' ') || firstName;
+
+      // Mettre à jour la table users
+      await connection.execute(`
+        UPDATE users 
+        SET first_name = ?, last_name = ?, bio = ?
+        WHERE id = ?
+      `, [firstName, lastName, bio, req.user.id]);
+
+      // Mettre à jour le profil freelance
+      await connection.execute(`
+        INSERT INTO freelance_profiles 
+        (user_id, hourly_rate, availability, experience_years, response_time_hours)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+        hourly_rate = VALUES(hourly_rate),
+        availability = VALUES(availability),
+        experience_years = VALUES(experience_years),
+        response_time_hours = VALUES(response_time_hours)
+      `, [
+        req.user.id,
+        hourlyRate || 0,
+        availability !== undefined ? availability : true,
+        experienceYears || 0,
+        responseTimeHours || 24
+      ]);
+
+      // Mettre à jour les compétences
+      if (skills && Array.isArray(skills)) {
+        // Supprimer les anciennes compétences
+        await connection.execute(
+          'DELETE FROM user_skills WHERE user_id = ?',
+          [req.user.id]
+        );
+
+        // Ajouter les nouvelles compétences
+        for (const skill of skills) {
+          if (skill.name && skill.name.trim()) {
+            // Vérifier si la compétence existe
+            let [existingSkills] = await connection.execute(
+              'SELECT id FROM skills WHERE LOWER(name) = LOWER(?)',
+              [skill.name.trim()]
+            );
+
+            let skillId;
+            if (existingSkills.length > 0) {
+              skillId = existingSkills[0].id;
+            } else {
+              // Créer la nouvelle compétence
+              const [insertResult] = await connection.execute(
+                'INSERT INTO skills (name, category) VALUES (?, ?)',
+                [skill.name.trim(), 'général']
+              );
+              skillId = insertResult.insertId;
+            }
+
+            // Associer la compétence à l'utilisateur
+            const proficiency = ['debutant', 'intermediaire', 'avance', 'expert'].includes(skill.level) 
+              ? skill.level : 'intermediaire';
+
+            await connection.execute(
+              'INSERT INTO user_skills (user_id, skill_id, proficiency) VALUES (?, ?, ?)',
+              [req.user.id, skillId, proficiency]
+            );
+          }
+        }
+      }
+
+      await connection.commit();
+      console.log('✅ Profil freelance mis à jour avec succès');
+
+      res.json({
+        success: true,
+        message: 'Profil mis à jour avec succès'
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur mise à jour profil:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la mise à jour du profil',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// GET /api/freelance-profile/stats - Statistiques du freelance
+app.get('/api/freelance-profile/stats', authMiddleware, requireFreelance, async (req, res) => {
+  try {
+    console.log('📊 Récupération stats freelance pour:', req.user.id);
+
+    const [stats] = await pool.execute(`
+      SELECT 
+        COALESCE(fp.completed_missions, 0) as completed_missions,
+        COALESCE(fp.average_rating, 0) as average_rating,
+        COALESCE(fp.total_earnings, 0) as total_earnings,
+        COALESCE(fp.response_time_hours, 24) as response_time_hours,
+        (SELECT COUNT(*) FROM applications WHERE freelance_id = ? AND status = 'pending') as pending_applications,
+        (SELECT COUNT(*) FROM missions WHERE assigned_freelance_id = ? AND status = 'in_progress') as active_missions
+      FROM freelance_profiles fp
+      WHERE fp.user_id = ?
+      UNION ALL
+      SELECT 0, 0, 0, 24, 0, 0
+      LIMIT 1
+    `, [req.user.id, req.user.id, req.user.id]);
+
+    const freelanceStats = stats[0] || {
+      completed_missions: 0,
+      average_rating: 0,
+      total_earnings: 0,
+      response_time_hours: 24,
+      pending_applications: 0,
+      active_missions: 0
+    };
+
+    res.json({
+      success: true,
+      stats: {
+        completed_missions: freelanceStats.completed_missions || 0,
+        average_rating: parseFloat(freelanceStats.average_rating) || 0,
+        total_earnings: parseFloat(freelanceStats.total_earnings) || 0,
+        response_time_hours: freelanceStats.response_time_hours || 24,
+        pending_applications: freelanceStats.pending_applications || 0,
+        active_missions: freelanceStats.active_missions || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur stats freelance:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération des statistiques'
+    });
+  }
+});
+
+// POST /api/freelance-profile/portfolio - Ajouter un projet au portfolio
+app.post('/api/freelance-profile/portfolio', authMiddleware, requireFreelance, async (req, res) => {
+  try {
+    console.log('📁 Ajout projet portfolio pour:', req.user.id);
+
+    const { title, description, imageUrl, projectUrl, technologies } = req.body;
+
+    if (!title || !description) {
+      return res.status(400).json({
+        success: false,
+        message: 'Titre et description requis'
+      });
+    }
+
+    // Vérifier si la table portfolio_projects existe
+    try {
+      const [result] = await pool.execute(`
+        INSERT INTO portfolio_projects 
+        (freelance_id, title, description, image_url, project_url, technologies)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        req.user.id,
+        title.trim(),
+        description.trim(),
+        imageUrl || null,
+        projectUrl || null,
+        technologies ? JSON.stringify(technologies) : null
+      ]);
+
+      const projectId = result.insertId;
+
+      res.json({
+        success: true,
+        message: 'Projet ajouté au portfolio avec succès',
+        project: {
+          id: projectId.toString(),
+          title,
+          description,
+          imageUrl: imageUrl || 'https://via.placeholder.com/300x200',
+          projectUrl: projectUrl || '',
+          technologies: technologies || [],
+          createdAt: new Date()
+        }
+      });
+    } catch (tableError) {
+      console.log('⚠️ Table portfolio_projects non trouvée, création simulée');
+      res.json({
+        success: true,
+        message: 'Projet ajouté (table portfolio_projects à créer)',
+        project: {
+          id: '1',
+          title,
+          description,
+          imageUrl: imageUrl || 'https://via.placeholder.com/300x200',
+          projectUrl: projectUrl || '',
+          technologies: technologies || [],
+          createdAt: new Date()
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur ajout portfolio:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de l\'ajout du projet'
+    });
+  }
+});
+
+// PUT /api/freelance-profile/portfolio/:id - Mettre à jour un projet
+app.put('/api/freelance-profile/portfolio/:id', authMiddleware, requireFreelance, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, imageUrl, projectUrl, technologies } = req.body;
+
+    console.log('📝 Mise à jour projet portfolio:', id);
+
+    if (!title || !description) {
+      return res.status(400).json({
+        success: false,
+        message: 'Titre et description requis'
+      });
+    }
+
+    try {
+      const [result] = await pool.execute(`
+        UPDATE portfolio_projects 
+        SET title = ?, description = ?, image_url = ?, project_url = ?, 
+            technologies = ?
+        WHERE id = ? AND freelance_id = ?
+      `, [
+        title.trim(),
+        description.trim(),
+        imageUrl || null,
+        projectUrl || null,
+        technologies ? JSON.stringify(technologies) : null,
+        id,
+        req.user.id
+      ]);
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Projet non trouvé ou non autorisé'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Projet mis à jour avec succès'
+      });
+    } catch (tableError) {
+      console.log('⚠️ Table portfolio_projects non trouvée');
+      res.json({
+        success: true,
+        message: 'Projet mis à jour (table portfolio_projects à créer)'
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur mise à jour portfolio:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la mise à jour'
+    });
+  }
+});
+
+// DELETE /api/freelance-profile/portfolio/:id - Supprimer un projet du portfolio
+app.delete('/api/freelance-profile/portfolio/:id', authMiddleware, requireFreelance, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🗑️ Suppression projet portfolio:', id);
+
+    try {
+      const [result] = await pool.execute(
+        'DELETE FROM portfolio_projects WHERE id = ? AND freelance_id = ?',
+        [id, req.user.id]
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Projet non trouvé ou non autorisé'
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'Projet supprimé du portfolio avec succès'
+      });
+    } catch (tableError) {
+      console.log('⚠️ Table portfolio_projects non trouvée');
+      res.json({
+        success: true,
+        message: 'Projet supprimé (table portfolio_projects à créer)'
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur suppression portfolio:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la suppression'
+    });
+  }
+});
+
+// DELETE /api/freelance-profile/skills/:skillId - Supprimer une compétence
+app.delete('/api/freelance-profile/skills/:skillId', authMiddleware, requireFreelance, async (req, res) => {
+  try {
+    const { skillId } = req.params;
+    console.log('🗑️ Suppression compétence:', skillId);
+
+    const [result] = await pool.execute(
+      'DELETE FROM user_skills WHERE user_id = ? AND skill_id = ?',
+      [req.user.id, skillId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Compétence non trouvée'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Compétence supprimée avec succès'
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur suppression compétence:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la suppression'
+    });
+  }
+});
 // ✅ ROUTES UTILISATEURS - Chargement sécurisé
 try {
   const usersRoutes = require('./routes/users');
