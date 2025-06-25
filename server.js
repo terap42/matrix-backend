@@ -1,8 +1,10 @@
-// server.js - VERSION COMPLÈTE AVEC INSCRIPTION
+// server.js - VERSION COMPLÈTE AVEC UPLOADS ET CONTENU
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const path = require('path');
+const fs = require('fs');
 const { testConnection, pool } = require('./config/database');
 require('dotenv').config();
 
@@ -16,6 +18,23 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Servir les fichiers statiques uploadés
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Créer les dossiers d'upload
+const uploadDirs = [
+  'uploads/content',
+  'uploads/avatars',
+  'uploads/documents'
+];
+
+uploadDirs.forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`📁 Dossier créé: ${dir}`);
+  }
+});
 
 // Log des requetes en mode developpement
 if (process.env.NODE_ENV === 'development') {
@@ -40,7 +59,7 @@ const authMiddleware = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'matrix-secret-key');
     
     const [users] = await pool.execute(
-      'SELECT id, email, user_type, is_active, first_name, last_name FROM users WHERE id = ?',
+      'SELECT id, email, user_type, is_active, first_name, last_name, avatar, bio FROM users WHERE id = ?',
       [decoded.id]
     );
     
@@ -56,7 +75,9 @@ const authMiddleware = async (req, res, next) => {
       email: users[0].email,
       userType: users[0].user_type,
       firstName: users[0].first_name,
-      lastName: users[0].last_name
+      lastName: users[0].last_name,
+      avatar: users[0].avatar,
+      bio: users[0].bio
     };
     
     next();
@@ -612,6 +633,7 @@ app.get('/api/health', (req, res) => {
       login: '/api/auth/login',
       register: '/api/auth/register',
       missions: '/api/missions',
+      content: '/api/content',
       health: '/api/health'
     }
   });
@@ -625,8 +647,8 @@ app.get('/api/test', (req, res) => {
       'GET /api/test',
       'GET /api/health ✅',
       'POST /api/auth/login',
-      'POST /api/auth/register ✅ NOUVEAU',
-      'POST /api/auth/check-email ✅ NOUVEAU',
+      'POST /api/auth/register ✅',
+      'POST /api/auth/check-email ✅',
       'POST /api/auth/create-admin',
       '--- ROUTES MISSIONS ---',
       'GET /api/missions',
@@ -634,7 +656,16 @@ app.get('/api/test', (req, res) => {
       'GET /api/missions/:id',
       'DELETE /api/missions/:id',
       'PATCH /api/missions/:id/status',
-      'GET /api/missions/stats/overview'
+      'GET /api/missions/stats/overview',
+      '--- ROUTES CONTENT ---',
+      'GET /api/content/posts',
+      'POST /api/content/posts',
+      'POST /api/content/posts/:id/like',
+      'POST /api/content/posts/:id/comment',
+      'POST /api/content/posts/:id/share',
+      'GET /api/content/users/:id/profile',
+      '--- FICHIERS STATIQUES ---',
+      'GET /uploads/* - Fichiers uploadés'
     ]
   });
 });
@@ -706,6 +737,10 @@ app.post('/api/auth/login', async (req, res) => {
         last_name: user.last_name,
         user_type: user.user_type,
         avatar: user.avatar,
+        bio: user.bio,
+        location: user.location,
+        phone: user.phone,
+        website: user.website,
         is_active: user.is_active
       }
     });
@@ -1003,6 +1038,7 @@ app.post('/api/auth/create-admin', async (req, res) => {
     });
   }
 });
+
 // Middleware pour vérifier que l'utilisateur est un freelance
 const requireFreelance = async (req, res, next) => {
   try {
@@ -1030,6 +1066,695 @@ const requireFreelance = async (req, res, next) => {
 
 // ✅ ======== ROUTES FREELANCE PROFILE COMPLÈTES ========
 
+// ✅ ======== ROUTES APPLICATIONS/CANDIDATURES ========
+// À ajouter dans server.js après les routes missions
+
+// POST /api/applications - Postuler à une mission
+app.post('/api/applications', authMiddleware, async (req, res) => {
+  let connection;
+  
+  try {
+    console.log('📝 Nouvelle candidature par utilisateur:', req.user.id);
+    
+    const {
+      mission_id,
+      proposal,
+      proposed_budget,
+      proposed_deadline,
+      cover_letter
+    } = req.body;
+
+    // Validation des données
+    if (!mission_id || !proposal) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de mission et proposition requis'
+      });
+    }
+
+    if (proposed_budget && proposed_budget <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Le budget proposé doit être positif'
+      });
+    }
+
+    // Vérifier que l'utilisateur est un freelance
+    const [userCheck] = await pool.execute(
+      'SELECT user_type FROM users WHERE id = ? AND is_active = 1',
+      [req.user.id]
+    );
+
+    if (userCheck.length === 0 || userCheck[0].user_type !== 'freelance') {
+      return res.status(403).json({
+        success: false,
+        message: 'Seuls les freelances peuvent postuler à des missions'
+      });
+    }
+
+    // Vérifier que la mission existe et est ouverte
+    const [missions] = await pool.execute(`
+      SELECT id, title, status, client_id, budget_min, budget_max 
+      FROM missions 
+      WHERE id = ? AND status = 'open'
+    `, [mission_id]);
+
+    if (missions.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Mission non trouvée ou fermée aux candidatures'
+      });
+    }
+
+    const mission = missions[0];
+
+    // Vérifier que le freelance ne postule pas à sa propre mission (au cas où)
+    if (mission.client_id === req.user.id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous ne pouvez pas postuler à votre propre mission'
+      });
+    }
+
+    // Vérifier si une candidature existe déjà
+    const [existingApplications] = await pool.execute(
+      'SELECT id FROM applications WHERE mission_id = ? AND freelance_id = ?',
+      [mission_id, req.user.id]
+    );
+
+    if (existingApplications.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Vous avez déjà postulé à cette mission'
+      });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Créer la candidature
+      const [result] = await connection.execute(`
+        INSERT INTO applications (
+          mission_id, freelance_id, proposal, proposed_budget, 
+          proposed_deadline, status, applied_at
+        ) VALUES (?, ?, ?, ?, ?, 'pending', NOW())
+      `, [
+        mission_id,
+        req.user.id,
+        proposal.trim(),
+        proposed_budget || null,
+        proposed_deadline || null
+      ]);
+
+      const applicationId = result.insertId;
+
+      await connection.commit();
+      console.log('✅ Candidature créée avec ID:', applicationId);
+
+      // Récupérer les détails complets de la candidature
+      const [newApplication] = await pool.execute(`
+        SELECT 
+          a.*,
+          u.first_name,
+          u.last_name,
+          u.avatar,
+          u.email,
+          fp.hourly_rate,
+          fp.experience_years,
+          fp.average_rating,
+          fp.completed_missions,
+          m.title as mission_title
+        FROM applications a
+        LEFT JOIN users u ON a.freelance_id = u.id
+        LEFT JOIN freelance_profiles fp ON u.id = fp.user_id
+        LEFT JOIN missions m ON a.mission_id = m.id
+        WHERE a.id = ?
+      `, [applicationId]);
+
+      const application = newApplication[0];
+
+      res.status(201).json({
+        success: true,
+        message: 'Candidature envoyée avec succès',
+        application: {
+          id: application.id.toString(),
+          mission_id: application.mission_id.toString(),
+          mission_title: application.mission_title,
+          freelance: {
+            id: application.freelance_id.toString(),
+            name: `${application.first_name} ${application.last_name}`,
+            avatar: application.avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+            email: application.email,
+            hourly_rate: application.hourly_rate || 0,
+            experience_years: application.experience_years || 0,
+            average_rating: application.average_rating || 0,
+            completed_missions: application.completed_missions || 0
+          },
+          proposal: application.proposal,
+          proposed_budget: application.proposed_budget,
+          proposed_deadline: application.proposed_deadline,
+          status: application.status,
+          applied_at: application.applied_at
+        }
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur création candidature:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la candidature',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// GET /api/applications - Récupérer les candidatures (freelance ou client selon contexte)
+app.get('/api/applications', authMiddleware, async (req, res) => {
+  try {
+    const { mission_id, status = 'all', page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    console.log('📋 Récupération candidatures pour utilisateur:', req.user.id);
+
+    let query;
+    let params = [];
+
+    // Si mission_id est fourni, récupérer les candidatures pour cette mission (côté client)
+    if (mission_id) {
+      // Vérifier que l'utilisateur est le propriétaire de la mission
+      const [missionCheck] = await pool.execute(
+        'SELECT client_id FROM missions WHERE id = ?',
+        [mission_id]
+      );
+
+      if (missionCheck.length === 0 || missionCheck[0].client_id !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          message: 'Accès non autorisé à cette mission'
+        });
+      }
+
+      query = `
+        SELECT 
+          a.*,
+          u.first_name,
+          u.last_name,
+          u.avatar,
+          u.email,
+          u.bio,
+          fp.hourly_rate,
+          fp.experience_years,
+          fp.average_rating,
+          fp.completed_missions,
+          fp.response_time_hours,
+          m.title as mission_title,
+          m.budget_min,
+          m.budget_max
+        FROM applications a
+        LEFT JOIN users u ON a.freelance_id = u.id
+        LEFT JOIN freelance_profiles fp ON u.id = fp.user_id
+        LEFT JOIN missions m ON a.mission_id = m.id
+        WHERE a.mission_id = ?
+      `;
+      params.push(mission_id);
+    } else {
+      // Récupérer les candidatures du freelance connecté
+      query = `
+        SELECT 
+          a.*,
+          m.title as mission_title,
+          m.description as mission_description,
+          m.category as mission_category,
+          m.budget_min,
+          m.budget_max,
+          m.deadline as mission_deadline,
+          m.status as mission_status,
+          uc.first_name as client_first_name,
+          uc.last_name as client_last_name,
+          uc.avatar as client_avatar
+        FROM applications a
+        LEFT JOIN missions m ON a.mission_id = m.id
+        LEFT JOIN users uc ON m.client_id = uc.id
+        WHERE a.freelance_id = ?
+      `;
+      params.push(req.user.id);
+    }
+
+    // Ajouter le filtre de statut si nécessaire
+    if (status !== 'all') {
+      query += ' AND a.status = ?';
+      params.push(status);
+    }
+
+    query += ' ORDER BY a.applied_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    const [applications] = await pool.execute(query, params);
+
+    // Formater les résultats selon le contexte
+    const formattedApplications = applications.map(app => {
+      const baseApplication = {
+        id: app.id.toString(),
+        mission_id: app.mission_id.toString(),
+        proposal: app.proposal,
+        proposed_budget: app.proposed_budget,
+        proposed_deadline: app.proposed_deadline,
+        status: app.status,
+        applied_at: app.applied_at,
+        responded_at: app.responded_at
+      };
+
+      if (mission_id) {
+        // Vue côté client - détails du freelance
+        return {
+          ...baseApplication,
+          mission_title: app.mission_title,
+          freelance: {
+            id: app.freelance_id.toString(),
+            name: `${app.first_name} ${app.last_name}`,
+            avatar: app.avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+            email: app.email,
+            bio: app.bio,
+            hourly_rate: app.hourly_rate || 0,
+            experience_years: app.experience_years || 0,
+            average_rating: parseFloat(app.average_rating) || 0,
+            completed_missions: app.completed_missions || 0,
+            response_time_hours: app.response_time_hours || 24
+          }
+        };
+      } else {
+        // Vue côté freelance - détails de la mission
+        return {
+          ...baseApplication,
+          mission: {
+            title: app.mission_title,
+            description: app.mission_description,
+            category: app.mission_category,
+            budget: {
+              min: app.budget_min || 0,
+              max: app.budget_max || 0
+            },
+            deadline: app.mission_deadline,
+            status: app.mission_status,
+            client: {
+              name: `${app.client_first_name} ${app.client_last_name}`,
+              avatar: app.client_avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face'
+            }
+          }
+        };
+      }
+    });
+
+    console.log(`✅ ${formattedApplications.length} candidatures récupérées`);
+
+    res.json({
+      success: true,
+      applications: formattedApplications,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: formattedApplications.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur récupération candidatures:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération des candidatures'
+    });
+  }
+});
+
+// PATCH /api/applications/:id/status - Modifier le statut d'une candidature (accepter/rejeter)
+app.patch('/api/applications/:id/status', authMiddleware, async (req, res) => {
+  let connection;
+
+  try {
+    const { id } = req.params;
+    const { status, response_message } = req.body;
+
+    console.log(`🔄 Modification statut candidature ${id} vers: ${status}`);
+
+    const validStatuses = ['accepted', 'rejected'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Statut invalide. Utilisez "accepted" ou "rejected"'
+      });
+    }
+
+    // Vérifier que la candidature existe et que l'utilisateur a le droit de la modifier
+    const [applications] = await pool.execute(`
+      SELECT a.*, m.client_id, m.title as mission_title
+      FROM applications a
+      LEFT JOIN missions m ON a.mission_id = m.id
+      WHERE a.id = ?
+    `, [id]);
+
+    if (applications.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Candidature non trouvée'
+      });
+    }
+
+    const application = applications[0];
+
+    if (application.client_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: 'Vous n\'êtes pas autorisé à modifier cette candidature'
+      });
+    }
+
+    if (application.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cette candidature a déjà été traitée'
+      });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Mettre à jour le statut de la candidature
+      await connection.execute(`
+        UPDATE applications 
+        SET status = ?, responded_at = NOW()
+        WHERE id = ?
+      `, [status, id]);
+
+      // Si acceptée, assigner le freelance à la mission et changer le statut de la mission
+      if (status === 'accepted') {
+        await connection.execute(`
+          UPDATE missions 
+          SET assigned_freelance_id = ?, status = 'assigned', updated_at = NOW()
+          WHERE id = ?
+        `, [application.freelance_id, application.mission_id]);
+
+        // Rejeter automatiquement les autres candidatures en attente
+        await connection.execute(`
+          UPDATE applications 
+          SET status = 'rejected', responded_at = NOW()
+          WHERE mission_id = ? AND id != ? AND status = 'pending'
+        `, [application.mission_id, id]);
+      }
+
+      await connection.commit();
+      console.log('✅ Statut candidature mis à jour avec succès');
+
+      res.json({
+        success: true,
+        message: status === 'accepted' ? 
+          'Candidature acceptée avec succès' : 
+          'Candidature rejetée',
+        application: {
+          id: application.id.toString(),
+          status: status,
+          responded_at: new Date()
+        }
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur modification statut candidature:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la modification du statut'
+    });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
+  }
+});
+
+// GET /api/applications/stats - Statistiques des candidatures
+app.get('/api/applications/stats', authMiddleware, async (req, res) => {
+  try {
+    console.log('📊 Récupération stats candidatures pour:', req.user.id);
+
+    const [stats] = await pool.execute(`
+      SELECT 
+        COUNT(*) as total_applications,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_applications,
+        SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) as accepted_applications,
+        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected_applications
+      FROM applications 
+      WHERE freelance_id = ?
+    `, [req.user.id]);
+
+    res.json({
+      success: true,
+      stats: {
+        total: stats[0].total_applications || 0,
+        pending: stats[0].pending_applications || 0,
+        accepted: stats[0].accepted_applications || 0,
+        rejected: stats[0].rejected_applications || 0,
+        success_rate: stats[0].total_applications > 0 ? 
+          ((stats[0].accepted_applications || 0) / stats[0].total_applications * 100).toFixed(1) : 
+          0
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur stats candidatures:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération des statistiques'
+    });
+  }
+});
+
+// DELETE /api/applications/:id - Supprimer/retirer une candidature (freelance seulement)
+app.delete('/api/applications/:id', authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('🗑️ Suppression candidature:', id);
+
+    // Vérifier que la candidature appartient au freelance et est en attente
+    const [applications] = await pool.execute(`
+      SELECT status FROM applications 
+      WHERE id = ? AND freelance_id = ?
+    `, [id, req.user.id]);
+
+    if (applications.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Candidature non trouvée'
+      });
+    }
+
+    if (applications[0].status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Vous ne pouvez pas retirer une candidature déjà traitée'
+      });
+    }
+
+    const [result] = await pool.execute(
+      'DELETE FROM applications WHERE id = ? AND freelance_id = ?',
+      [id, req.user.id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Candidature non trouvée'
+      });
+    }
+
+    console.log('✅ Candidature supprimée avec succès');
+    res.json({
+      success: true,
+      message: 'Candidature retirée avec succès'
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur suppression candidature:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la suppression'
+    });
+  }
+});
+
+// ✅ ROUTES ADMIN - Gestion des candidatures
+// GET /api/admin/applications - Vue globale des candidatures pour l'admin
+app.get('/api/admin/applications', authMiddleware, async (req, res) => {
+  try {
+    // Vérifier que l'utilisateur est admin
+    const [adminCheck] = await pool.execute(
+      'SELECT user_type FROM users WHERE id = ? AND user_type = "admin"',
+      [req.user.id]
+    );
+
+    if (adminCheck.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'Accès réservé aux administrateurs'
+      });
+    }
+
+    const { 
+      status = 'all', 
+      page = 1, 
+      limit = 20,
+      search = '',
+      date_from = '',
+      date_to = ''
+    } = req.query;
+
+    const offset = (page - 1) * limit;
+    
+    console.log('👑 Admin - Récupération candidatures globales');
+
+    let whereConditions = [];
+    let queryParams = [];
+
+    if (status !== 'all') {
+      whereConditions.push('a.status = ?');
+      queryParams.push(status);
+    }
+
+    if (search) {
+      whereConditions.push(`(
+        m.title LIKE ? OR 
+        CONCAT(uf.first_name, ' ', uf.last_name) LIKE ? OR
+        CONCAT(uc.first_name, ' ', uc.last_name) LIKE ?
+      )`);
+      const searchTerm = `%${search}%`;
+      queryParams.push(searchTerm, searchTerm, searchTerm);
+    }
+
+    if (date_from) {
+      whereConditions.push('DATE(a.applied_at) >= ?');
+      queryParams.push(date_from);
+    }
+
+    if (date_to) {
+      whereConditions.push('DATE(a.applied_at) <= ?');
+      queryParams.push(date_to);
+    }
+
+    const whereClause = whereConditions.length > 0 ? 
+      'WHERE ' + whereConditions.join(' AND ') : '';
+
+    const query = `
+      SELECT 
+        a.*,
+        m.title as mission_title,
+        m.category as mission_category,
+        m.budget_min,
+        m.budget_max,
+        uf.first_name as freelance_first_name,
+        uf.last_name as freelance_last_name,
+        uf.email as freelance_email,
+        uf.avatar as freelance_avatar,
+        uc.first_name as client_first_name,
+        uc.last_name as client_last_name,
+        uc.email as client_email,
+        fp.average_rating as freelance_rating,
+        fp.completed_missions as freelance_completed
+      FROM applications a
+      LEFT JOIN missions m ON a.mission_id = m.id
+      LEFT JOIN users uf ON a.freelance_id = uf.id
+      LEFT JOIN users uc ON m.client_id = uc.id
+      LEFT JOIN freelance_profiles fp ON uf.id = fp.user_id
+      ${whereClause}
+      ORDER BY a.applied_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    queryParams.push(parseInt(limit), parseInt(offset));
+    const [applications] = await pool.execute(query, queryParams);
+
+    // Récupérer le total pour la pagination
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM applications a
+      LEFT JOIN missions m ON a.mission_id = m.id
+      LEFT JOIN users uf ON a.freelance_id = uf.id
+      LEFT JOIN users uc ON m.client_id = uc.id
+      ${whereClause}
+    `;
+
+    const [countResult] = await pool.execute(
+      countQuery, 
+      queryParams.slice(0, -2) // Enlever limit et offset
+    );
+
+    const formattedApplications = applications.map(app => ({
+      id: app.id.toString(),
+      mission: {
+        id: app.mission_id.toString(),
+        title: app.mission_title,
+        category: app.mission_category,
+        budget: {
+          min: app.budget_min || 0,
+          max: app.budget_max || 0
+        }
+      },
+      freelance: {
+        id: app.freelance_id.toString(),
+        name: `${app.freelance_first_name} ${app.freelance_last_name}`,
+        email: app.freelance_email,
+        avatar: app.freelance_avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
+        rating: parseFloat(app.freelance_rating) || 0,
+        completed_missions: app.freelance_completed || 0
+      },
+      client: {
+        name: `${app.client_first_name} ${app.client_last_name}`,
+        email: app.client_email
+      },
+      proposal: app.proposal,
+      proposed_budget: app.proposed_budget,
+      proposed_deadline: app.proposed_deadline,
+      status: app.status,
+      applied_at: app.applied_at,
+      responded_at: app.responded_at
+    }));
+
+    console.log(`✅ ${formattedApplications.length} candidatures admin récupérées`);
+
+    res.json({
+      success: true,
+      applications: formattedApplications,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: countResult[0].total,
+        totalPages: Math.ceil(countResult[0].total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur admin candidatures:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération des candidatures'
+    });
+  }
+});
+
+console.log('✅ Routes candidatures ajoutées au serveur');
 // GET /api/freelance-profile - Récupérer le profil du freelance connecté
 app.get('/api/freelance-profile', authMiddleware, requireFreelance, async (req, res) => {
   try {
@@ -1529,6 +2254,15 @@ try {
 } catch (error) {
   console.error('❌ Erreur chargement routes users:', error.message);
   console.log('⚠️ Routes users non disponibles');
+}
+// ✅ ROUTES CONTENT - Système de contenus
+try {
+  const contentRoutes = require('./routes/content');
+  app.use('/api/content', contentRoutes);
+  console.log('✅ Routes content chargées avec succès');
+} catch (error) {
+  console.error('❌ Erreur chargement routes content:', error.message);
+  console.log('⚠️ Routes content non disponibles');
 }
 
 // Middleware de gestion des erreurs

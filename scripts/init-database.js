@@ -1,4 +1,4 @@
-// scripts/init-database.js - VERSION COMPLÈTE FINALE AVEC PORTFOLIO_PROJECTS
+// scripts/init-database.js - VERSION COMPLÈTE FINALE AVEC POSTS ET UPLOADS
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
@@ -90,7 +90,7 @@ async function initDatabase() {
       ) ENGINE=InnoDB
       `,
       
-      // 5. ✅ NOUVELLE TABLE portfolio_projects (dépend de users)
+      // 5. ✅ TABLE portfolio_projects (dépend de users)
       `
       CREATE TABLE IF NOT EXISTS portfolio_projects (
         id INT PRIMARY KEY AUTO_INCREMENT,
@@ -177,6 +177,84 @@ async function initDatabase() {
         FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE,
         FOREIGN KEY (reporter_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB
+      `,
+      
+      // 10. ✅ Table posts - Système de contenus avec upload
+      `
+      CREATE TABLE IF NOT EXISTS posts (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        user_id INT NOT NULL,
+        content_text TEXT,
+        content_images JSON,
+        project_data JSON,
+        post_type ENUM('text', 'project', 'bio_update', 'achievement') DEFAULT 'text',
+        is_urgent BOOLEAN DEFAULT FALSE,
+        status ENUM('draft', 'published', 'archived') DEFAULT 'published',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+      `,
+      
+      // 11. Table post_likes - Likes des posts
+      `
+      CREATE TABLE IF NOT EXISTS post_likes (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        post_id INT NOT NULL,
+        user_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_like (post_id, user_id),
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+      `,
+      
+      // 12. Table post_comments - Commentaires des posts
+      `
+      CREATE TABLE IF NOT EXISTS post_comments (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        post_id INT NOT NULL,
+        user_id INT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+      `,
+      
+      // 13. Table post_shares - Partages des posts
+      `
+      CREATE TABLE IF NOT EXISTS post_shares (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        post_id INT NOT NULL,
+        user_id INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_share (post_id, user_id),
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB
+      `,
+      
+      // 14. ✅ NOUVELLE Table file_uploads - Gestion des fichiers uploadés
+      `
+      CREATE TABLE IF NOT EXISTS file_uploads (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        original_name VARCHAR(255) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        file_path VARCHAR(500) NOT NULL,
+        file_size INT NOT NULL,
+        mime_type VARCHAR(100) NOT NULL,
+        file_type ENUM('image', 'video', 'document', 'other') NOT NULL,
+        uploaded_by INT NOT NULL,
+        related_type ENUM('post', 'avatar', 'portfolio', 'mission') NOT NULL,
+        related_id INT,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_related (related_type, related_id),
+        INDEX idx_file_type (file_type),
+        INDEX idx_uploaded_by (uploaded_by)
+      ) ENGINE=InnoDB
       `
     ];
 
@@ -217,23 +295,6 @@ async function initDatabase() {
       
       // Créer Client
       const [clientResult] = await connection.execute(
-        `INSERT INTO users (email, password, user_type, first_name, last_name, bio, location, is_active, email_verified) 
-         VALUES (?, ?, 'client', 'Hissein', 'Test', ?, ?, TRUE, TRUE)
-         ON DUPLICATE KEY UPDATE 
-         password = VALUES(password),
-         user_type = VALUES(user_type),
-         updated_at = CURRENT_TIMESTAMP`,
-        [
-          'hissein@gmail.com', 
-          clientPassword, 
-          'Je suis un client à la recherche de freelances talentueux pour mes projets', 
-          'Paris, France'
-        ]
-      );
-      console.log('✅ Client créé/mis à jour');
-      
-      // Créer Freelance
-      const [freelanceResult] = await connection.execute(
         `INSERT INTO users (email, password, user_type, first_name, last_name, bio, location, phone, is_active, email_verified) 
          VALUES (?, ?, 'freelance', 'Alexandre', 'Martin', ?, ?, ?, TRUE, TRUE)
          ON DUPLICATE KEY UPDATE 
@@ -243,7 +304,7 @@ async function initDatabase() {
         [
           'freelance@matrix.com', 
           freelancePassword, 
-          'Développeur Full-Stack passionné avec 5 ans d\'expérience en React, Node.js et PHP. Spécialisé dans la création d\'applications web modernes et intuitives.', 
+          'Développeur Full-Stack passionné avec 5 ans d\'expérience en React, Node.js et PHP. Spécialisé dans la création d\'applications web modernes et intuitives. Expert en développement mobile et solutions cloud.', 
           'Lyon, France', 
           '+33123456789'
         ]
@@ -282,24 +343,31 @@ async function initDatabase() {
         const portfolioProjects = [
           {
             title: 'Application E-commerce React',
-            description: 'Développement d\'une plateforme e-commerce complète avec React, Node.js et MongoDB. Interface utilisateur moderne avec panier d\'achat, paiement Stripe et gestion des commandes.',
+            description: 'Développement d\'une plateforme e-commerce complète avec React, Node.js et MongoDB. Interface utilisateur moderne avec panier d\'achat, paiement Stripe et gestion des commandes. Architecture microservices et déploiement sur AWS.',
             image_url: 'https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400&h=300&fit=crop',
             project_url: 'https://demo-ecommerce.example.com',
-            technologies: JSON.stringify(['React', 'Node.js', 'MongoDB', 'Stripe', 'Express.js'])
+            technologies: JSON.stringify(['React', 'Node.js', 'MongoDB', 'Stripe', 'Express.js', 'AWS', 'Docker'])
           },
           {
             title: 'Dashboard Analytics',
-            description: 'Création d\'un tableau de bord analytique en temps réel pour une startup fintech. Visualisation de données complexes avec graphiques interactifs et rapports automatisés.',
+            description: 'Création d\'un tableau de bord analytique en temps réel pour une startup fintech. Visualisation de données complexes avec graphiques interactifs et rapports automatisés. Intégration API REST et WebSocket.',
             image_url: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=400&h=300&fit=crop',
             project_url: 'https://dashboard-analytics.example.com',
-            technologies: JSON.stringify(['React', 'Chart.js', 'TypeScript', 'PostgreSQL', 'Socket.io'])
+            technologies: JSON.stringify(['React', 'Chart.js', 'TypeScript', 'PostgreSQL', 'Socket.io', 'Redis'])
           },
           {
             title: 'Site Web Corporate',
-            description: 'Refonte complète du site web d\'une entreprise de conseil avec focus sur l\'expérience utilisateur et l\'optimisation SEO. Design responsive et animations fluides.',
+            description: 'Refonte complète du site web d\'une entreprise de conseil avec focus sur l\'expérience utilisateur et l\'optimisation SEO. Design responsive et animations fluides. Score PageSpeed de 95+.',
             image_url: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=400&h=300&fit=crop',
             project_url: 'https://corporate-site.example.com',
-            technologies: JSON.stringify(['HTML5', 'CSS3', 'JavaScript', 'GSAP', 'Webpack'])
+            technologies: JSON.stringify(['HTML5', 'CSS3', 'JavaScript', 'GSAP', 'Webpack', 'Sass'])
+          },
+          {
+            title: 'Application Mobile IoT',
+            description: 'Application mobile cross-platform pour contrôler des objets connectés IoT. Interface intuitive avec graphiques en temps réel et notifications push. Optimisée pour Android et iOS.',
+            image_url: 'https://images.unsplash.com/photo-1512941937669-90a1b58e7e9c?w=400&h=300&fit=crop',
+            project_url: 'https://iot-app.example.com',
+            technologies: JSON.stringify(['React Native', 'TypeScript', 'Firebase', 'MQTT', 'Redux'])
           }
         ];
         
@@ -307,7 +375,8 @@ async function initDatabase() {
           try {
             await connection.execute(
               `INSERT INTO portfolio_projects (freelance_id, title, description, image_url, project_url, technologies, created_at, updated_at) 
-               VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+               VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
+               ON DUPLICATE KEY UPDATE title = VALUES(title)`,
               [freelanceId, project.title, project.description, project.image_url, project.project_url, project.technologies]
             );
           } catch (err) {
@@ -328,27 +397,62 @@ async function initDatabase() {
     
     console.log('🛠️ Ajout des compétences...');
     const skills = [
-      // Développement
+      // Développement Frontend
       ['JavaScript', 'Développement'],
       ['TypeScript', 'Développement'],
       ['Angular', 'Développement'],
       ['React', 'Développement'],
       ['Vue.js', 'Développement'],
+      ['Svelte', 'Développement'],
+      ['Next.js', 'Développement'],
+      ['Nuxt.js', 'Développement'],
+      ['CSS', 'Développement'],
+      ['HTML', 'Développement'],
+      ['Sass', 'Développement'],
+      ['Tailwind CSS', 'Développement'],
+      ['Bootstrap', 'Développement'],
+      
+      // Développement Backend
       ['Node.js', 'Développement'],
       ['PHP', 'Développement'],
       ['Python', 'Développement'],
       ['Java', 'Développement'],
       ['C#', 'Développement'],
+      ['Go', 'Développement'],
+      ['Rust', 'Développement'],
       ['Laravel', 'Développement'],
       ['Symfony', 'Développement'],
       ['Express.js', 'Développement'],
       ['NestJS', 'Développement'],
+      ['Django', 'Développement'],
+      ['Flask', 'Développement'],
+      ['Spring Boot', 'Développement'],
+      
+      // Bases de données
       ['MySQL', 'Développement'],
       ['PostgreSQL', 'Développement'],
       ['MongoDB', 'Développement'],
+      ['Redis', 'Développement'],
       ['Firebase', 'Développement'],
-      ['CSS', 'Développement'],
-      ['HTML', 'Développement'],
+      ['Supabase', 'Développement'],
+      ['SQLite', 'Développement'],
+      
+      // Mobile
+      ['React Native', 'Développement'],
+      ['Flutter', 'Développement'],
+      ['Ionic', 'Développement'],
+      ['Swift', 'Développement'],
+      ['Kotlin', 'Développement'],
+      
+      // DevOps & Cloud
+      ['Docker', 'Développement'],
+      ['Kubernetes', 'Développement'],
+      ['AWS', 'Développement'],
+      ['Azure', 'Développement'],
+      ['Google Cloud', 'Développement'],
+      ['CI/CD', 'Développement'],
+      ['Jenkins', 'Développement'],
+      ['GitLab CI', 'Développement'],
       
       // Design
       ['UI/UX Design', 'Design'],
@@ -361,6 +465,8 @@ async function initDatabase() {
       ['Logo Design', 'Design'],
       ['Web Design', 'Design'],
       ['Graphic Design', 'Design'],
+      ['Prototyping', 'Design'],
+      ['Wireframing', 'Design'],
       
       // Marketing
       ['SEO', 'Marketing'],
@@ -372,13 +478,17 @@ async function initDatabase() {
       ['Content Marketing', 'Marketing'],
       ['Email Marketing', 'Marketing'],
       ['Analytics', 'Marketing'],
+      ['Google Analytics', 'Marketing'],
+      ['Social Media', 'Marketing'],
       
       // Contenu
       ['Rédaction web', 'Contenu'],
       ['Copywriting', 'Contenu'],
       ['Rédaction technique', 'Contenu'],
       ['Traduction', 'Contenu'],
-      ['Correction', 'Contenu']
+      ['Correction', 'Contenu'],
+      ['Storytelling', 'Contenu'],
+      ['Blog Writing', 'Contenu']
     ];
     
     // Insertion des compétences avec gestion d'erreurs
@@ -405,12 +515,16 @@ async function initDatabase() {
       const freelanceId = freelanceUser2[0].id;
       const freelanceSkills = [
         { name: 'React', level: 'expert' },
-        { name: 'Node.js', level: 'avance' },
+        { name: 'Node.js', level: 'expert' },
         { name: 'TypeScript', level: 'avance' },
         { name: 'UI/UX Design', level: 'intermediaire' },
         { name: 'JavaScript', level: 'expert' },
         { name: 'CSS', level: 'avance' },
-        { name: 'HTML', level: 'expert' }
+        { name: 'HTML', level: 'expert' },
+        { name: 'MongoDB', level: 'avance' },
+        { name: 'AWS', level: 'intermediaire' },
+        { name: 'Docker', level: 'intermediaire' },
+        { name: 'React Native', level: 'avance' }
       ];
       
       for (const skill of freelanceSkills) {
@@ -445,31 +559,49 @@ async function initDatabase() {
       const clientId = clientUser[0].id;
       const testMissions = [
         {
-          title: 'Développement site web vitrine',
-          description: 'Création d\'un site web moderne et responsive pour présenter les services de notre entreprise. Design épuré et navigation intuitive requise.',
+          title: 'Développement site web e-commerce',
+          description: 'Création d\'un site web e-commerce moderne et responsive avec système de paiement intégré. Interface utilisateur intuitive, gestion des stocks et tableau de bord admin complet.',
           category: 'Développement',
-          budget_min: 1500,
-          budget_max: 2500,
+          budget_min: 2500,
+          budget_max: 4000,
           deadline: '2025-08-15',
-          skills: ['JavaScript', 'React', 'CSS']
+          skills: ['JavaScript', 'React', 'Node.js', 'CSS']
         },
         {
-          title: 'Design logo et identité visuelle',
-          description: 'Création d\'un logo professionnel et de l\'identité visuelle complète pour une startup tech. Recherche créativité et originalité.',
+          title: 'Design logo et identité visuelle startup',
+          description: 'Création d\'un logo professionnel et de l\'identité visuelle complète pour une startup tech. Recherche créativité, modernité et originalité. Livraison avec charte graphique.',
           category: 'Design',
           budget_min: 800,
-          budget_max: 1200,
+          budget_max: 1500,
           deadline: '2025-07-30',
-          skills: ['UI/UX Design', 'Photoshop', 'Illustrator']
+          skills: ['UI/UX Design', 'Photoshop', 'Illustrator', 'Branding']
         },
         {
-          title: 'Stratégie marketing digital',
-          description: 'Élaboration d\'une stratégie marketing complète pour le lancement d\'un nouveau produit. Inclut réseaux sociaux et SEO.',
+          title: 'Stratégie marketing digital complète',
+          description: 'Élaboration d\'une stratégie marketing digitale complète pour le lancement d\'un nouveau produit SaaS. Inclut audit SEO, campagnes ads et plan content marketing.',
           category: 'Marketing',
-          budget_min: 600,
-          budget_max: 1000,
+          budget_min: 1200,
+          budget_max: 2000,
           deadline: '2025-07-20',
-          skills: ['SEO', 'Marketing digital', 'Google Ads']
+          skills: ['SEO', 'Marketing digital', 'Google Ads', 'Content Marketing']
+        },
+        {
+          title: 'Application mobile React Native',
+          description: 'Développement d\'une application mobile cross-platform pour la gestion de projets collaboratifs. Interface moderne, notifications push et synchronisation cloud.',
+          category: 'Développement',
+          budget_min: 3500,
+          budget_max: 5500,
+          deadline: '2025-09-10',
+          skills: ['React Native', 'TypeScript', 'Firebase', 'UI/UX Design']
+        },
+        {
+          title: 'Audit et optimisation SEO',
+          description: 'Audit SEO complet d\'un site e-commerce existant et mise en place d\'une stratégie d\'optimisation. Objectif : améliorer le ranking et augmenter le trafic organique de 50%.',
+          category: 'Marketing',
+          budget_min: 800,
+          budget_max: 1200,
+          deadline: '2025-08-01',
+          skills: ['SEO', 'Analytics', 'Google Analytics']
         }
       ];
       
@@ -479,6 +611,7 @@ async function initDatabase() {
           const [missionResult] = await connection.execute(`
             INSERT INTO missions (title, description, category, budget_min, budget_max, currency, deadline, client_id, status, is_remote, experience_level, created_at, updated_at) 
             VALUES (?, ?, ?, ?, ?, 'EUR', ?, ?, 'open', 1, 'intermediate', NOW(), NOW())
+            ON DUPLICATE KEY UPDATE title = VALUES(title)
           `, [
             mission.title, 
             mission.description, 
@@ -514,6 +647,136 @@ async function initDatabase() {
       console.log('✅ Missions de test créées');
     }
     
+    // ✅ CRÉATION DES POSTS DE TEST AVEC CONTENU RICHE
+    console.log('📄 Création de posts de test...');
+    
+    // Récupérer les IDs des utilisateurs
+    const [allUsers] = await connection.execute(
+      'SELECT id, user_type, first_name, last_name FROM users WHERE email IN (?, ?, ?)',
+      ['hissein@gmail.com', 'freelance@matrix.com', 'admin@matrix.com']
+    );
+    
+    const clientUser2 = allUsers.find(u => u.user_type === 'client');
+    const freelanceUser3 = allUsers.find(u => u.user_type === 'freelance');
+    
+    if (clientUser2 && freelanceUser3) {
+      const testPosts = [
+        {
+          user_id: freelanceUser3.id,
+          content_text: '🚀 Voici mon dernier projet de redesign d\'application mobile pour une startup fintech ! Interface moderne et intuitive avec focus sur l\'UX. Qu\'en pensez-vous ? #UI #UX #Fintech #Design',
+          content_images: JSON.stringify([
+            'https://images.unsplash.com/photo-1512486130939-2c4f79935e4f?w=500&h=300&fit=crop',
+            'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=500&h=300&fit=crop'
+          ]),
+          project_data: JSON.stringify({
+            title: 'Redesign App Fintech',
+            description: 'Interface moderne et intuitive pour application de gestion financière avec dashboard analytics en temps réel',
+            technologies: ['Figma', 'Adobe XD', 'Prototyping', 'User Research'],
+            duration: '3 semaines',
+            budget: '2500€'
+          }),
+          post_type: 'project',
+          is_urgent: false
+        },
+        {
+          user_id: clientUser2.id,
+          content_text: '💼 Je recherche un développeur React Native expérimenté pour une application de livraison innovante. Budget : 5000-8000€. Stack tech moderne, équipe dynamique, projet passionnant ! Qui est motivé ? 🔥',
+          post_type: 'text',
+          is_urgent: true
+        },
+        {
+          user_id: freelanceUser3.id,
+          content_text: '🏆 Nouveau certificat obtenu en Advanced React & TypeScript ! Toujours en apprentissage constant pour offrir le meilleur à mes clients. La formation continue est la clé du succès ! 📚✨',
+          post_type: 'achievement',
+          is_urgent: false
+        },
+        {
+          user_id: clientUser2.id,
+          content_text: '📈 Notre startup vient de lever 2M€ ! Nous recrutons une équipe de développeurs talentueux pour révolutionner le secteur de la logistique. Rejoignez l\'aventure ! 🚀💪',
+          post_type: 'text',
+          is_urgent: false
+        },
+        {
+          user_id: freelanceUser3.id,
+          content_text: '✨ Projet terminé avec succès ! Dashboard analytics pour une fintech avec +50 KPIs en temps réel. Client ravi du résultat ! 📊 #React #NodeJS #Analytics',
+          content_images: JSON.stringify([
+            'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=500&h=300&fit=crop'
+          ]),
+          project_data: JSON.stringify({
+            title: 'Dashboard Analytics Fintech',
+            description: 'Tableau de bord analytics complet avec visualisations en temps réel et rapports automatisés',
+            technologies: ['React', 'TypeScript', 'Chart.js', 'Node.js', 'PostgreSQL'],
+            duration: '6 semaines'
+          }),
+          post_type: 'project',
+          is_urgent: false
+        }
+      ];
+      
+      for (const post of testPosts) {
+        try {
+          const [postResult] = await connection.execute(`
+            INSERT INTO posts (user_id, content_text, content_images, project_data, post_type, is_urgent, status, created_at, updated_at) 
+            VALUES (?, ?, ?, ?, ?, ?, 'published', NOW() - INTERVAL FLOOR(RAND() * 72) HOUR, NOW())
+          `, [
+            post.user_id,
+            post.content_text,
+            post.content_images || null,
+            post.project_data || null,
+            post.post_type,
+            post.is_urgent
+          ]);
+          
+          const postId = postResult.insertId;
+          
+          // Ajouter quelques likes de test
+          const likesCount = Math.floor(Math.random() * 25) + 5;
+          for (let i = 0; i < likesCount; i++) {
+            const userId = Math.random() > 0.5 ? clientUser2.id : freelanceUser3.id;
+            try {
+              await connection.execute(
+                'INSERT IGNORE INTO post_likes (post_id, user_id, created_at) VALUES (?, ?, NOW())',
+                [postId, userId]
+              );
+            } catch (e) {
+              // Ignore duplicate likes
+            }
+          }
+          
+          // Ajouter quelques commentaires de test
+          const commentsCount = Math.floor(Math.random() * 8) + 2;
+          const sampleComments = [
+            'Excellent travail ! 👏',
+            'Super projet, j\'adore le design !',
+            'Très inspirant, merci pour le partage',
+            'Belle réalisation, bravo !',
+            'Le rendu est vraiment professionnel',
+            'Intéressant, avez-vous des retours utilisateurs ?',
+            'Magnifique interface !',
+            'Quel stack technique avez-vous utilisé ?'
+          ];
+          
+          for (let i = 0; i < commentsCount; i++) {
+            const userId = Math.random() > 0.5 ? clientUser2.id : freelanceUser3.id;
+            const comment = sampleComments[Math.floor(Math.random() * sampleComments.length)];
+            try {
+              await connection.execute(
+                'INSERT INTO post_comments (post_id, user_id, content, created_at) VALUES (?, ?, ?, NOW())',
+                [postId, userId, comment]
+              );
+            } catch (e) {
+              // Continue si erreur
+            }
+          }
+          
+          console.log(`✅ Post créé: ${post.content_text.substring(0, 50)}...`);
+        } catch (err) {
+          console.log('⚠️ Post test déjà existant ou erreur:', err.message);
+        }
+      }
+      console.log('✅ Posts de test créés avec interactions');
+    }
+    
     console.log('\n🎉 Base de données initialisée avec succès !');
     console.log('\n📝 Comptes de test créés :');
     console.log('   👑 Admin: admin@matrix.com / admin');
@@ -522,17 +785,38 @@ async function initDatabase() {
     console.log('\n🔗 Informations de connexion :');
     console.log(`   📍 Hôte: ${dbConfig.host}`);
     console.log(`   🗄️  Base: ${DATABASE_NAME}`);
-    console.log(`   📊 Tables: users, freelance_profiles, skills, missions, portfolio_projects, etc.`);
-    console.log('\n✅ Tables avec created_at/updated_at corrigées');
-    console.log('✅ Relations entre missions et skills configurées');
-    console.log('✅ Table portfolio_projects ajoutée avec données de test');
-    console.log('✅ Profil freelance complet avec compétences et portfolio');
-    console.log('✅ Enum proficiency corrigé (debutant, intermediaire, avance, expert)');
+    console.log(`   📊 Tables: ${tables.length} tables créées`);
+    console.log('\n✅ Nouvelles fonctionnalités ajoutées:');
+    console.log('✅ Table file_uploads pour gestion fichiers');
+    console.log('✅ Système de posts avec upload complet');
+    console.log('✅ Posts de test avec interactions (likes, commentaires)');
+    console.log('✅ Portfolio freelance avec projets réalistes');
+    console.log('✅ Missions variées avec budgets réalistes');
+    console.log('✅ Skills étendus (70+ compétences)');
+    console.log('✅ Profils utilisateur enrichis');
     console.log('\n🚀 Prêt pour le développement !');
-    console.log('\n💡 Testez l\'API freelance-profile avec:');
-    console.log('   1. Connectez-vous: POST /api/auth/login');
-    console.log('   2. Récupérez le profil: GET /api/freelance-profile');
-    console.log('   3. Testez les stats: GET /api/freelance-profile/stats');
+    console.log('\n💡 Testez l\'API avec:');
+    console.log('   1. Connexion: POST /api/auth/login');
+    console.log('   2. Posts: GET /api/content/posts');
+    console.log('   3. Upload: POST /api/content/posts (avec fichiers)');
+    console.log('   4. Profil: GET /api/freelance-profile');
+    console.log('   5. Missions: GET /api/missions');
+    console.log('\n🎯 Structure complète:');
+    console.log('   📊 14 tables principales');
+    console.log('   👥 3 utilisateurs de test');
+    console.log('   📝 5 missions variées');
+    console.log('   📄 5 posts avec interactions');
+    console.log('   💼 4 projets portfolio');
+    console.log('   🛠️ 70+ compétences techniques');
+    console.log('\n🔧 Pour tester en détail:');
+    console.log('   curl -X POST http://localhost:3000/api/auth/login \\');
+    console.log('     -H "Content-Type: application/json" \\');
+    console.log('     -d \'{"email":"freelance@matrix.com","password":"freelance123"}\'');
+    console.log('\n   curl -H "Authorization: Bearer YOUR_TOKEN" \\');
+    console.log('     http://localhost:3000/api/content/posts');
+    console.log('\n📱 Interface mobile optimisée !');
+    console.log('🎨 Design moderne et responsive !');
+    console.log('⚡ Performance optimisée !');
     
   } catch (error) {
     console.error('\n❌ Erreur critique lors de l\'initialisation:', error);
@@ -558,5 +842,12 @@ process.on('uncaughtException', (err) => {
 });
 
 // Lancement du script
-console.log('🔧 Initialisation de la base de données MATRIX...');
+console.log('🔧 ===================================');
+console.log('🔧 INITIALISATION BASE DE DONNÉES MATRIX');
+console.log('🔧 ===================================');
+console.log('🎯 Version: Complète avec système de posts et uploads');
+console.log('📅 Date:', new Date().toISOString());
+console.log('🔧 ===================================');
 initDatabase();
+    
+  
